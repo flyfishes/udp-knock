@@ -19,14 +19,26 @@ exclude = [
 ]
 
 
+
 [features]
 default = []
 openwrt = []
 linux = []
-windows = []  # windows 现在只是一个标志
+windows = []
 all-platforms = ["openwrt", "linux", "windows"]
 
 [dependencies]
+# 核心依赖
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+chrono = "0.4"
+
 # 加密相关
 aes-gcm = "0.10"
 rand = "0.8"
@@ -35,42 +47,20 @@ hmac = "0.12"
 sha2 = "0.10"
 argon2 = "0.5"
 
-# 网络和序列化
-tokio = { version = "1.35", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = "0.4"
-url = "2.5"
-
-# 系统操作
+# 系统操作（Linux/Unix）
 nix = "0.27"
 which = "5.0"
-log = "0.4"
-env_logger = "0.10"
-clap = { version = "4.4", features = ["derive"] }
-anyhow = "1.0"
-thiserror = "1.0"
 
-# 平台特定 - Linux
+# Linux 平台依赖（可选，因为目前是占位实现）
 [target.'cfg(target_os="linux")'.dependencies]
-iptables = "0.3"
+# iptables = "0.3"  # 暂时注释掉，等实现时再启用
 
-# 平台特定 - Windows（只使用 winapi）
-[target.'cfg(target_os="windows")'.dependencies]
-winapi = { version = "0.3", features = [
-    "winerror", 
-    "netfw", 
-    "combaseapi",
-    "objbase",
-    "oleauto",
-    "unknwnbase",
-    "synchapi",
-] }
+# Windows 平台依赖（可选，因为目前是占位实现）
+# [target.'cfg(target_os="windows")'.dependencies]
+# windows-sys = { version = "0.52", features = [...] }
 
-# 开发依赖
 [dev-dependencies]
 tokio-test = "0.4"
-mockall = "0.12"
 tempfile = "3.8"
 
 [profile.release]

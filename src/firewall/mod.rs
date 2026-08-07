@@ -2,7 +2,7 @@
 
 pub mod traits;
 
-// 根据启用的 feature 条件编译对应的平台模块
+// 平台模块
 #[cfg(feature = "openwrt")]
 pub mod openwrt;
 
@@ -12,8 +12,17 @@ pub mod linux;
 #[cfg(feature = "windows")]
 pub mod windows;
 
-// 重新导出工厂函数和关键类型
+// 重新导出
 pub use traits::*;
+
+#[cfg(feature = "openwrt")]
+pub use openwrt::OpenWrtFirewall;
+
+#[cfg(feature = "linux")]
+pub use linux::LinuxFirewall;
+
+#[cfg(feature = "windows")]
+pub use windows::WindowsFirewall;
 
 /// 创建防火墙管理器实例的工厂函数
 pub fn create_firewall_manager(
@@ -24,17 +33,17 @@ pub fn create_firewall_manager(
 
     #[cfg(feature = "openwrt")]
     if firewall_type == "openwrt" || (firewall_type == "auto" && platform == "openwrt") {
-        return Ok(Box::new(openwrt::OpenWrtFirewall::new(config)?));
+        return Ok(Box::new(OpenWrtFirewall::new(config)?));
     }
 
     #[cfg(feature = "linux")]
     if firewall_type == "iptables" || (firewall_type == "auto" && platform == "linux") {
-        return Ok(Box::new(linux::LinuxFirewall::new(config)?));
+        return Ok(Box::new(LinuxFirewall::new(config)?));
     }
 
     #[cfg(feature = "windows")]
     if firewall_type == "windows" || (firewall_type == "auto" && platform == "windows") {
-        return Ok(Box::new(windows::WindowsFirewall::new(config)?));
+        return Ok(Box::new(WindowsFirewall::new(config)?));
     }
 
     Err(format!(
