@@ -1,39 +1,20 @@
-name: Build & Release
+name: Build and Release
 
 on:
-  # 1. Tag 推送触发发布
   push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
     tags:
       - 'v*'
-      - 'v*.*'
-      - 'v*.*.*'
-  
-  # 2. PR 触发检查（仅针对默认分支）
   pull_request:
-    branches:
-      - main
-  
-  # 3. 直接推送到默认分支也触发检查
-  push:
-    branches:
-      - main
-      - master
-  
-  # 4. 手动触发（带可选参数）
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      force_release:
-        description: 'Force create release (skip tag check)'
-        required: false
-        default: 'false'
-        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-
-permissions:
-  contents: write
 
 jobs:
   # ============================================================
