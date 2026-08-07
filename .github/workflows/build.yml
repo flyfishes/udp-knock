@@ -1,297 +1,225 @@
-name: Build and Release
+name: Build & Release
 
 on:
   push:
-    branches: [ main, develop ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
     tags:
       - 'v*'
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: write
 
 jobs:
-  # ==================== Windows 平台 ====================
-  build-windows:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: x86_64-pc-windows-msvc
-        override: true
-        components: rustfmt, clippy
-        
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          windows-cargo-
-          
-    - name: Build
-      run: cargo build --release --features windows --verbose
-      
-    - name: Run tests
-      run: cargo test --features windows --verbose
-      
-    - name: Check formatting
-      run: cargo fmt -- --check
-      
-    - name: Run clippy
-      run: cargo clippy --features windows -- -D warnings
-      
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: udp-knock-windows-x86_64
-        path: target/release/udp-knock.exe
-        if-no-files-found: error
-        
-    - name: Package for release
-      if: startsWith(github.ref, 'refs/tags/v')
-      shell: pwsh
-      run: |
-        cd target/release
-        Compress-Archive -Path udp-knock.exe -DestinationPath udp-knock-windows-x86_64.zip
-        $hash = (Get-FileHash udp-knock-windows-x86_64.zip -Algorithm SHA256).Hash
-        $hash | Out-File udp-knock-windows-x86_64.sha256
-        
-    - name: Upload release assets
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-windows
-        path: target/release/udp-knock-windows-x86_64.*
-
-  # ==================== Linux Ubuntu 平台 ====================
-  build-linux:
+  # ============================================================
+  # Job 1: 代码检查与单元测试 (仅在 PR 和 tag 触发时运行)
+  # ============================================================
+  check-and-test:
+    name: Check & Test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: x86_64-unknown-linux-gnu
-        override: true
-        components: rustfmt, clippy
-        
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libssl-dev \
-          pkg-config \
-          build-essential
-        
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          linux-cargo-
-          
-    - name: Build
-      run: cargo build --release --features linux --verbose
-      
-    - name: Run tests
-      run: cargo test --features linux --verbose
-      
-    - name: Check formatting
-      run: cargo fmt -- --check
-      
-    - name: Run clippy
-      run: cargo clippy --features linux -- -D warnings
-      
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: udp-knock-linux-x86_64
-        path: target/release/udp-knock
-        if-no-files-found: error
-        
-    - name: Package for release
-      if: startsWith(github.ref, 'refs/tags/v')
-      run: |
-        cd target/release
-        tar -czf udp-knock-linux-x86_64.tar.gz udp-knock
-        sha256sum udp-knock-linux-x86_64.tar.gz > udp-knock-linux-x86_64.sha256
-        
-    - name: Upload release assets
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-linux
-        path: target/release/udp-knock-linux-x86_64.*
+      - uses: actions/checkout@v4
 
-  # ==================== OpenWrt aarch64_cortex-a53 ====================
-  build-openwrt-aarch64:
-    runs-on: ubuntu-latest
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy lint (all features)
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ============================================================
+  # Job 2: 多平台构建矩阵
+  # ============================================================
+  build:
+    name: Build ${{ matrix.artifact }}
+    needs: check-and-test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- Windows x86_64 ---
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            features: windows
+            artifact: udp-knock-windows-x86_64.exe
+            cross: false
+            upx: false
+
+          # --- Linux x86_64 (glibc) ---
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            features: linux
+            artifact: udp-knock-linux-x86_64
+            cross: false
+            upx: true
+
+          # --- OpenWrt aarch64 (musl static) ---
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            features: openwrt
+            artifact: udp-knock-openwrt-aarch64
+            cross: true
+            upx: true
+
+          # --- OpenWrt x86_64 (musl static) ---
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            features: openwrt
+            artifact: udp-knock-openwrt-x86_64
+            cross: true
+            upx: true
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: aarch64-unknown-linux-gnu
-        override: true
-        
-    - name: Install cross-compilation dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          gcc-aarch64-linux-gnu \
-          libssl-dev \
-          pkg-config \
-          build-essential
-        
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: openwrt-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          openwrt-aarch64-cargo-
-        
-    - name: Build for OpenWrt aarch64
-      env:
-        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        TARGET_CC: aarch64-linux-gnu-gcc
-      run: |
-        RUSTFLAGS="-C target-cpu=cortex-a53 -C opt-level=z" \
-        cargo build --target aarch64-unknown-linux-gnu --release --features openwrt --verbose
-        
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: udp-knock-openwrt-aarch64_cortex-a53
-        path: target/aarch64-unknown-linux-gnu/release/udp-knock
-        if-no-files-found: error
-        
-    - name: Package for release
-      if: startsWith(github.ref, 'refs/tags/v')
-      run: |
-        cd target/aarch64-unknown-linux-gnu/release
-        tar -czf udp-knock-openwrt-aarch64_cortex-a53.tar.gz udp-knock
-        sha256sum udp-knock-openwrt-aarch64_cortex-a53.tar.gz > udp-knock-openwrt-aarch64_cortex-a53.sha256
-        
-    - name: Upload release assets
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-openwrt-aarch64
-        path: target/aarch64-unknown-linux-gnu/release/udp-knock-openwrt-aarch64_cortex-a53.*
+      - uses: actions/checkout@v4
 
-  # ==================== OpenWrt x86_64 ====================
-  build-openwrt-x86_64:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: x86_64-unknown-linux-gnu
-        override: true
-        
-    - name: Install cross-compilation dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          gcc-x86-64-linux-gnu \
-          libssl-dev \
-          pkg-config \
-          build-essential
-        
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: openwrt-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          openwrt-x86_64-cargo-
-        
-    - name: Build for OpenWrt x86_64
-      env:
-        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: x86_64-linux-gnu-gcc
-        TARGET_CC: x86_64-linux-gnu-gcc
-      run: |
-        RUSTFLAGS="-C target-cpu=x86-64 -C opt-level=z" \
-        cargo build --target x86_64-unknown-linux-gnu --release --features openwrt --verbose
-        
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: udp-knock-openwrt-x86_64
-        path: target/x86_64-unknown-linux-gnu/release/udp-knock
-        if-no-files-found: error
-        
-    - name: Package for release
-      if: startsWith(github.ref, 'refs/tags/v')
-      run: |
-        cd target/x86_64-unknown-linux-gnu/release
-        tar -czf udp-knock-openwrt-x86_64.tar.gz udp-knock
-        sha256sum udp-knock-openwrt-x86_64.tar.gz > udp-knock-openwrt-x86_64.sha256
-        
-    - name: Upload release assets
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-openwrt-x86_64
-        path: target/x86_64-unknown-linux-gnu/release/udp-knock-openwrt-x86_64.*
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-  # ==================== 创建 GitHub Release ====================
-  create-release:
-    needs: 
-      - build-windows
-      - build-linux
-      - build-openwrt-aarch64
-      - build-openwrt-x86_64
-    runs-on: ubuntu-latest
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.features }}
+
+      # ---- Native build (Windows / Linux glibc) ----
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+          echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock${{ matrix.target == 'x86_64-pc-windows-msvc' && '.exe' || '' }}" >> $GITHUB_ENV
+
+      # ---- Cross build (OpenWrt musl targets) ----
+      - name: Install cross
+        if: ${{ matrix.cross }}
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+
+      - name: Build (cross)
+        if: ${{ matrix.cross }}
+        run: |
+          cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+          echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock" >> $GITHUB_ENV
+
+      # ---- UPX compression (Linux / OpenWrt only) ----
+      - name: Install UPX
+        if: ${{ matrix.upx }}
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+
+      - name: Compress with UPX
+        if: ${{ matrix.upx }}
+        run: |
+          upx --best --lzma "${{ env.BUILD_OUTPUT }}"
+          ls -lh "${{ env.BUILD_OUTPUT }}"
+
+      # ---- Rename artifact & generate checksum ----
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ env.BUILD_OUTPUT }}" "dist/${{ matrix.artifact }}"
+          cd dist
+          sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          cat "${{ matrix.artifact }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          retention-days: 30
+
+  # ============================================================
+  # Job 3: 合并校验文件 + 创建 GitHub Release
+  # ============================================================
+  release:
+    name: Create Release
+    needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
+    runs-on: ubuntu-latest
     steps:
-    - name: Download all release artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-        
-    - name: Display structure
-      run: ls -R artifacts
-        
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/release-*/**/*
-        generate_release_notes: true
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS.txt
+          echo "=== SHA256SUMS.txt ==="
+          cat SHA256SUMS.txt
+          echo ""
+          echo "=== Artifacts ==="
+          ls -lh
+
+      - name: Extract release notes from tag
+        id: tag_info
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_info.outputs.tag }}
+          name: "UDP Knock ${{ steps.tag_info.outputs.tag }}"
+          draft: false
+          prerelease: ${{ contains(steps.tag_info.outputs.tag, '-') }}
+          files: |
+            dist/udp-knock-*
+            dist/SHA256SUMS.txt
+          body: |
+            ## UDP Knock ${{ steps.tag_info.outputs.tag }}
+
+            ### 📦 Downloads
+
+            | Platform | Architecture | File |
+            |----------|-------------|------|
+            | Windows | x86_64 | `udp-knock-windows-x86_64.exe` |
+            | Linux | x86_64 (glibc) | `udp-knock-linux-x86_64` |
+            | OpenWrt | aarch64 Cortex-A53 | `udp-knock-openwrt-aarch64` |
+            | OpenWrt | x86_64 | `udp-knock-openwrt-x86_64` |
+
+            ### ✅ Verify Integrity
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
+
+            ### 🔧 Usage
+            ```bash
+            # Generate config
+            ./udp-knock init --platform openwrt
+
+            # Start server
+            ./udp-knock server
+
+            # Send command
+            ./udp-knock client --action list
+            ```
+
+            _Built automatically by GitHub Actions._
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

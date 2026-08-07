@@ -1,71 +1,44 @@
 [package]
 name = "udp-knock"
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
-authors = ["flyfishes <your.email@example.com>"]
-description = "Secure UDP Knock tool for remote firewall management"
-license = "MIT"
-repository = "https://github.com/flyfishes/udp-knock"
-readme = "README.md"
-keywords = ["udp", "knock", "firewall", "security", "openwrt"]
-categories = ["network-programming", "security", "command-line-utilities"]
-exclude = [
-    ".github/",
-    "openwrt/",
-    "configs/",
-    "scripts/",
-    "tests/",
-    "docs/",
-]
-
-
+rust-version = "1.75"
 
 [features]
 default = []
 openwrt = []
 linux = []
 windows = []
-all-platforms = ["openwrt", "linux", "windows"]
 
 [dependencies]
-# 核心依赖
-tokio = { version = "1.35", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-log = "0.4"
-env_logger = "0.10"
-clap = { version = "4.4", features = ["derive"] }
-anyhow = "1.0"
-thiserror = "1.0"
-chrono = "0.4"
+# Async Runtime
+tokio = { version = "1", features = ["net", "time", "macros", "rt", "signal"] }
 
-# 加密相关
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto
 aes-gcm = "0.10"
-rand = "0.8"
-base64 = "0.21"
 hmac = "0.12"
 sha2 = "0.10"
-argon2 = "0.5"
+base64 = "0.22"
+rand = "0.8"
 
-# 系统操作（Linux/Unix）
-nix = "0.27"
-which = "5.0"
-
-# Linux 平台依赖（可选，因为目前是占位实现）
-[target.'cfg(target_os="linux")'.dependencies]
-# iptables = "0.3"  # 暂时注释掉，等实现时再启用
-
-# Windows 平台依赖（可选，因为目前是占位实现）
-# [target.'cfg(target_os="windows")'.dependencies]
-# windows-sys = { version = "0.52", features = [...] }
-
-[dev-dependencies]
-tokio-test = "0.4"
-tempfile = "3.8"
+# Utilities
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+governor = "0.6"
+chrono = { version = "0.4", features = ["serde"] }
 
 [profile.release]
-lto = true
 opt-level = "z"
+lto = true
 strip = true
-codegen-units = 1
 panic = "abort"
+codegen-units = 1

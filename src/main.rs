@@ -1,145 +1,114 @@
-// src/main.rs
+mod cli;
+mod client;
+mod config;
+mod crypto;
+mod error;
+mod firewall;
+mod protocol;
+mod server;
 
-use clap::{Parser, Subcommand};
-use log::{info, error};
-use udp_knock::{Config, Server, Client};
+use clap::Parser;
+use tracing_subscriber::EnvFilter;
 
-#[derive(Parser)]
-#[command(name = "udp-knock")]
-#[command(about = "安全的UDP Knock工具 - 远程防火墙管理", long_about = None)]
-#[command(version)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
+use cli::{Cli, Commands};
+use client::Client;
+use config::Config;
+use protocol::Request;
+use server::Server;
 
-    #[arg(short, long, default_value = "config.json")]
-    config: String,
-
-    #[arg(short, long)]
-    debug: bool,
-
-    #[arg(short, long)]
-    platform: Option<String>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// 启动服务器模式
-    Server {
-        #[arg(short, long)]
-        daemon: bool,
-    },
-    /// 启动客户端模式
-    Client {
-        #[arg(short, long)]
-        action: String,
-        #[arg(short, long)]
-        params: Vec<String>,
-        #[arg(short = 't', long)]
-        timeout: Option<u64>,
-    },
-    /// 生成默认配置文件
-    Init {
-        #[arg(short, long, default_value = "config.json")]
-        output: String,
-        #[arg(short, long)]
-        platform: Option<String>,
-    },
-    /// 显示当前防火墙状态
-    Status,
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    
-    // 初始化日志
-    let log_level = if cli.debug { "debug" } else { "info" };
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(log_level)
-    )
-    .format_timestamp_millis()
-    .init();
 
-    // 处理Init命令
-    if let Commands::Init { output, platform } = cli.command {
-        let platform = platform.unwrap_or_else(|| get_platform());
-        info!("为平台 {} 生成配置文件", platform);
-        
-        let config = Config::default_for_platform(&platform)?;
-        config.save_to_file(&output)?;
-        
-        println!("✅ 配置文件已生成: {}", output);
-        println!("⚠️  请修改配置文件中的密钥和地址设置！");
-        return Ok(());
-    }
-
-    // 加载配置
-    let mut config = match Config::from_file(&cli.config) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            error!("加载配置文件失败: {}", e);
-            error!("请运行 'udp-knock init' 生成默认配置文件");
-            return Err(e);
-        }
+    // Setup logging
+    let filter = if cli.debug {
+        EnvFilter::new("debug")
+    } else {
+        EnvFilter::new("warn")
     };
-
-    if cli.debug {
-        config.debug = true;
-    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
-        Commands::Server { daemon: _ } => {
-            info!("启动UDP Knock服务器 (平台: {})", get_platform());
-            let mut server = Server::new(config);
-            server.start().await?;
+        Commands::Init { platform } => {
+            let content = Config::generate_default(&platform);
+            std::fs::write(&cli.config, &content)?;
+            println!("Generated config at: {}", cli.config);
         }
+
+        Commands::Server => {
+            let config = Config::load(&cli.config)?;
+            let srv = Server::new(config)?;
+            srv.run().await?;
+        }
+
         Commands::Client { action, params, timeout } => {
-            info!("启动UDP Knock客户端");
+            let mut config = Config::load(&cli.config)?;
             if let Some(t) = timeout {
-                config.client.timeout_secs = t;
+                config.timeout_secs = t;
             }
-            
-            let client = Client::new(config).await?;
-            let result = client.send_command(&action, &params).await;
-            
-            match result {
-                Ok(response) => {
-                    println!("✅ 成功: {}", response);
+
+            let request = build_request(&action, &params)?;
+            let client = Client::new(config);
+            let response = client.send(request).await?;
+
+            if response.success {
+                println!("✅ {}", response.message);
+                if let Some(data) = response.data {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
                 }
-                Err(e) => {
-                    eprintln!("❌ 失败: {}", e);
-                    std::process::exit(1);
-                }
+            } else {
+                eprintln!("❌ {}", response.message);
+                std::process::exit(1);
             }
         }
-        Commands::Init { .. } => unreachable!(),
+
         Commands::Status => {
-            info!("获取防火墙状态");
-            let firewall = crate::firewall::create_firewall_manager(&config)?;
-            let status = firewall.get_status()?;
-            println!("防火墙状态:");
-            println!("{}", serde_json::to_string_pretty(&status)?);
+            let config = Config::load(&cli.config)?;
+            let client = Client::new(config);
+            let response = client.send(Request::Status).await?;
+            if response.success {
+                println!("✅ {}", response.message);
+                if let Some(data) = response.data {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
+                }
+            } else {
+                eprintln!("❌ {}", response.message);
+                std::process::exit(1);
+            }
         }
     }
 
     Ok(())
 }
 
-fn get_platform() -> String {
-    #[cfg(target_os = "openwrt")]
-    return "openwrt".to_string();
-    #[cfg(all(target_os = "linux", not(target_os = "openwrt")))]
-    return "linux".to_string();
-    #[cfg(target_os = "windows")]
-    return "windows".to_string();
-    #[cfg(target_os = "macos")]
-    return "macos".to_string();
-    #[cfg(not(any(
-        target_os = "openwrt",
-        target_os = "linux",
-        target_os = "windows",
-        target_os = "macos"
-    )))]
-    return "unknown".to_string();
+fn build_request(action: &str, params: &[String]) -> anyhow::Result<Request> {
+    match action {
+        "list" => Ok(Request::List),
+        "status" => Ok(Request::Status),
+        "enable" => {
+            let name = params.first().ok_or_else(|| anyhow::anyhow!("enable requires <name>"))?;
+            Ok(Request::Enable { name: name.clone() })
+        }
+        "disable" => {
+            let name = params.first().ok_or_else(|| anyhow::anyhow!("disable requires <name>"))?;
+            Ok(Request::Disable { name: name.clone() })
+        }
+        "delete" => {
+            let name = params.first().ok_or_else(|| anyhow::anyhow!("delete requires <name>"))?;
+            Ok(Request::Delete { name: name.clone() })
+        }
+        "create" => {
+            if params.len() < 5 {
+                anyhow::bail!("create requires <name> <src> <dest> <proto> <port>");
+            }
+            Ok(Request::Create {
+                name: params[0].clone(),
+                src: params[1].clone(),
+                dest: params[2].clone(),
+                proto: params[3].clone(),
+                port: params[4].clone(),
+            })
+        }
+        _ => anyhow::bail!("Unknown action: {}. Use: list|enable|disable|create|delete|status", action),
+    }
 }

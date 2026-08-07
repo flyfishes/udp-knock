@@ -1,54 +1,29 @@
-// src/firewall/mod.rs
+use async_trait::async_trait;
+use serde_json::Value;
 
-pub mod traits;
+use crate::error::AppError;
 
-// 平台模块
 #[cfg(feature = "openwrt")]
 pub mod openwrt;
 
-#[cfg(feature = "linux")]
-pub mod linux;
+#[async_trait]
+pub trait FirewallManager: Send + Sync {
+    async fn list_rules(&self) -> Result<Value, AppError>;
+    async fn enable_rule(&self, name: &str) -> Result<(), AppError>;
+    async fn disable_rule(&self, name: &str) -> Result<(), AppError>;
+    async fn create_rule(&self, name: &str, src: &str, dest: &str, proto: &str, port: &str) -> Result<(), AppError>;
+    async fn delete_rule(&self, name: &str) -> Result<(), AppError>;
+    async fn status(&self) -> Result<Value, AppError>;
+}
 
-#[cfg(feature = "windows")]
-pub mod windows;
+pub fn create_firewall_manager(platform: &str) -> Result<Box<dyn FirewallManager>, AppError> {
+    match platform {
+        #[cfg(feature = "openwrt")]
+        "openwrt" => Ok(Box::new(openwrt::OpenWrtFirewall::new())),
 
-// 重新导出
-pub use traits::*;
+        #[cfg(not(feature = "openwrt"))]
+        "openwrt" => Err(AppError::Firewall("OpenWrt support not compiled in".into())),
 
-#[cfg(feature = "openwrt")]
-pub use openwrt::OpenWrtFirewall;
-
-#[cfg(feature = "linux")]
-pub use linux::LinuxFirewall;
-
-#[cfg(feature = "windows")]
-pub use windows::WindowsFirewall;
-
-/// 创建防火墙管理器实例的工厂函数
-pub fn create_firewall_manager(
-    config: &crate::config::Config,
-) -> Result<Box<dyn FirewallManager>, Box<dyn std::error::Error>> {
-    let firewall_type = &config.server.firewall.firewall_type;
-    let platform = &config.platform;
-
-    #[cfg(feature = "openwrt")]
-    if firewall_type == "openwrt" || (firewall_type == "auto" && platform == "openwrt") {
-        return Ok(Box::new(OpenWrtFirewall::new(config)?));
+        _ => Err(AppError::Firewall(format!("Unsupported platform: {}", platform))),
     }
-
-    #[cfg(feature = "linux")]
-    if firewall_type == "iptables" || (firewall_type == "auto" && platform == "linux") {
-        return Ok(Box::new(LinuxFirewall::new(config)?));
-    }
-
-    #[cfg(feature = "windows")]
-    if firewall_type == "windows" || (firewall_type == "auto" && platform == "windows") {
-        return Ok(Box::new(WindowsFirewall::new(config)?));
-    }
-
-    Err(format!(
-        "不支持的防火墙类型: '{}' (平台: '{}')，或对应的 feature 未启用",
-        firewall_type, platform
-    )
-    .into())
 }
