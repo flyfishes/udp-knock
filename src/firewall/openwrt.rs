@@ -1,3 +1,4 @@
+#![cfg(target_os = "openwrt")]
 use super::traits::*;
 use crate::config::Config;
 use log::{debug, error};
