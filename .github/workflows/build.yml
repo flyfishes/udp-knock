@@ -1,4 +1,4 @@
-name: Build
+name: Build and Release
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+    tags:
+      - 'v*'  # 推送 tag 时触发
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -14,28 +16,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable, nightly]
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.os }}
+  # ==================== Windows 平台 ====================
+  build-windows:
+    runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
     
     - name: Setup Rust
       uses: actions-rs/toolchain@v1
       with:
-        toolchain: ${{ matrix.rust }}
-        target: ${{ matrix.target }}
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
         override: true
+        components: rustfmt, clippy
         
     - name: Cache cargo registry
       uses: actions/cache@v4
@@ -44,32 +37,46 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
-          ${{ runner.os }}-cargo-
+          windows-cargo-
           
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo build --release --features windows --verbose
       
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --features windows --verbose
+      
+    - name: Check formatting
+      run: cargo fmt -- --check
+      
+    - name: Run clippy
+      run: cargo clippy --features windows -- -D warnings
       
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: udp-knock-${{ matrix.os }}-${{ matrix.rust }}
-        path: target/release/udp-knock*
+        name: udp-knock-windows-x86_64
+        path: target/release/udp-knock.exe
         if-no-files-found: error
+        
+    - name: Package for release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        cd target/release
+        Compress-Archive -Path udp-knock.exe -DestinationPath udp-knock-windows-x86_64.zip
+        certutil -hashfile udp-knock-windows-x86_64.zip SHA256 | Select-Object -First 1 > udp-knock-windows-x86_64.sha256
+        
+    - name: Upload release assets
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-windows
+        path: target/release/udp-knock-windows-x86_64.*
 
-  build-openwrt:
+  # ==================== Linux Ubuntu 平台 ====================
+  build-linux:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [
-          aarch64-unknown-linux-gnu,
-          armv7-unknown-linux-gnueabihf,
-          x86_64-unknown-linux-gnu
-        ]
     steps:
     - uses: actions/checkout@v4
     
@@ -77,36 +84,65 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
-        target: ${{ matrix.target }}
+        target: x86_64-unknown-linux-gnu
         override: true
+        components: rustfmt, clippy
         
-    - name: Install OpenWrt SDK dependencies
+    - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libssl-dev pkg-config
+        sudo apt-get install -y \
+          libssl-dev \
+          pkg-config \
+          build-essential
         
-    - name: Build for OpenWrt
-      run: |
-        RUSTFLAGS="-C target-cpu=cortex-a53 -C opt-level=z" \
-        cargo build --target ${{ matrix.target }} --release --features openwrt
-        
-    - name: Upload OpenWrt artifacts
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          linux-cargo-
+          
+    - name: Build
+      run: cargo build --release --features linux --verbose
+      
+    - name: Run tests
+      run: cargo test --features linux --verbose
+      
+    - name: Check formatting
+      run: cargo fmt -- --check
+      
+    - name: Run clippy
+      run: cargo clippy --features linux -- -D warnings
+      
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: udp-knock-openwrt-${{ matrix.target }}
-        path: target/${{ matrix.target }}/release/udp-knock
+        name: udp-knock-linux-x86_64
+        path: target/release/udp-knock
+        if-no-files-found: error
+        
+    - name: Package for release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        cd target/release
+        tar -czf udp-knock-linux-x86_64.tar.gz udp-knock
+        sha256sum udp-knock-linux-x86_64.tar.gz > udp-knock-linux-x86_64.sha256
+        
+    - name: Upload release assets
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-linux
+        path: target/release/udp-knock-linux-x86_64.*
 
-  build-cross:
+  # ==================== OpenWrt aarch64_cortex-a53 ====================
+  build-openwrt-aarch64:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [
-          aarch64-unknown-linux-musl,
-          armv7-unknown-linux-musleabihf,
-          arm-unknown-linux-musleabihf,
-          x86_64-unknown-linux-musl,
-          i686-unknown-linux-musl
-        ]
     steps:
     - uses: actions/checkout@v4
     
@@ -114,18 +150,147 @@ jobs:
       uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
-        target: ${{ matrix.target }}
+        target: aarch64-unknown-linux-gnu
         override: true
         
-    - name: Install cross
-      run: cargo install cross
-        
-    - name: Build with cross
+    - name: Install cross-compilation dependencies
       run: |
-        cross build --target ${{ matrix.target }} --release --features all-platforms
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-aarch64-linux-gnu \
+          libssl-dev \
+          pkg-config \
+          build-essential
         
-    - name: Upload cross artifacts
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: openwrt-aarch64-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          openwrt-aarch64-cargo-
+        
+    - name: Build for OpenWrt aarch64
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        TARGET_CC: aarch64-linux-gnu-gcc
+      run: |
+        RUSTFLAGS="-C target-cpu=cortex-a53 -C opt-level=z" \
+        cargo build --target aarch64-unknown-linux-gnu --release --features openwrt --verbose
+        
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: udp-knock-${{ matrix.target }}
-        path: target/${{ matrix.target }}/release/udp-knock
+        name: udp-knock-openwrt-aarch64_cortex-a53
+        path: target/aarch64-unknown-linux-gnu/release/udp-knock
+        if-no-files-found: error
+        
+    - name: Package for release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        cd target/aarch64-unknown-linux-gnu/release
+        tar -czf udp-knock-openwrt-aarch64_cortex-a53.tar.gz udp-knock
+        sha256sum udp-knock-openwrt-aarch64_cortex-a53.tar.gz > udp-knock-openwrt-aarch64_cortex-a53.sha256
+        
+    - name: Upload release assets
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-openwrt-aarch64
+        path: target/aarch64-unknown-linux-gnu/release/udp-knock-openwrt-aarch64_cortex-a53.*
+
+  # ==================== OpenWrt x86_64 ====================
+  build-openwrt-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-unknown-linux-gnu
+        override: true
+        
+    - name: Install cross-compilation dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-x86-64-linux-gnu \
+          libssl-dev \
+          pkg-config \
+          build-essential
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: openwrt-x86_64-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          openwrt-x86_64-cargo-
+        
+    - name: Build for OpenWrt x86_64
+      env:
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: x86_64-linux-gnu-gcc
+        TARGET_CC: x86_64-linux-gnu-gcc
+      run: |
+        RUSTFLAGS="-C target-cpu=x86-64 -C opt-level=z" \
+        cargo build --target x86_64-unknown-linux-gnu --release --features openwrt --verbose
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: udp-knock-openwrt-x86_64
+        path: target/x86_64-unknown-linux-gnu/release/udp-knock
+        if-no-files-found: error
+        
+    - name: Package for release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        cd target/x86_64-unknown-linux-gnu/release
+        tar -czf udp-knock-openwrt-x86_64.tar.gz udp-knock
+        sha256sum udp-knock-openwrt-x86_64.tar.gz > udp-knock-openwrt-x86_64.sha256
+        
+    - name: Upload release assets
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-openwrt-x86_64
+        path: target/x86_64-unknown-linux-gnu/release/udp-knock-openwrt-x86_64.*
+
+  # ==================== 创建 GitHub Release ====================
+  create-release:
+    needs: 
+      - build-windows
+      - build-linux
+      - build-openwrt-aarch64
+      - build-openwrt-x86_64
+    runs-on: ubuntu-latest
+    # 只在推送 tag 时运行
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+    - name: Download all release artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        
+    - name: Display structure
+      run: ls -R artifacts
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/release-*/**/*
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
