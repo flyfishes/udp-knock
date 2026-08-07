@@ -138,18 +138,22 @@ udp-knock client -a list -p rule -n 10
 
 #### ② 启用/禁用指定防火墙规则 (`enable` / `disable`)
 ```bash
-# 启用名为 rule_ssh 的规则
-udp-knock client -a enable -p rule_ssh
+# 启用名为 rule_ssh 的规则, windows 下默认in，其他平台参数无效
+udp-knock client -a enable -p rule_ssh [in|out]
 
 # 禁用名为 rule_ssh 的规则
-udp-knock client -a disable -p rule_ssh
+udp-knock client -a disable -p rule_ssh [in|out]
 ```
 
 #### ③ 创建新规则 (`create`)
-格式：`create <规则名> <源区域> <目标区域> <协议> <端口>`
+格式：`create <规则名> <源区域> <目标区域> <协议> <端口>` [in|out]
 ```bash
 # 创建允许 WAN 访问 LAN 80 端口的网页访问规则
 udp-knock client -a create -p rule_web wan lan tcp 80
+# 创建 inbound 规则（默认）
+udp-knock client -a create -p "MyRule" "192.168.1.0/24" "any" "tcp" "8080"
+# 创建 outbound 规则
+udp-knock client -a create -p "MyRule" "any" "10.0.0.1" "tcp" "443" "out"
 ```
 
 #### ④ 删除规则 (`delete`)

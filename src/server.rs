@@ -271,7 +271,8 @@ impl Server {
             },
             "enable" => {
                 if let Some(rule_name) = cmd.params.first() {
-                    match firewall.enable_rule(rule_name) {
+                    let dir = cmd.params.get(1).map(|s| s.as_str());
+                    match firewall.enable_rule(rule_name, dir) {
                         Ok(_) => ResponsePayload {
                             success: true,
                             message: format!("Rule '{}' enabled successfully", rule_name),
@@ -296,7 +297,8 @@ impl Server {
             }
             "disable" => {
                 if let Some(rule_name) = cmd.params.first() {
-                    match firewall.disable_rule(rule_name) {
+                    let dir = cmd.params.get(1).map(|s| s.as_str());
+                    match firewall.disable_rule(rule_name, dir) {
                         Ok(_) => ResponsePayload {
                             success: true,
                             message: format!("Rule '{}' disabled successfully", rule_name),
@@ -336,8 +338,9 @@ impl Server {
                             };
                         }
                     };
+                    let dir = cmd.params.get(5).map(|s| s.as_str());
 
-                    match firewall.create_rule(name, src, dest, proto, port) {
+                    match firewall.create_rule(name, src, dest, proto, port, dir) {
                         Ok(_) => ResponsePayload {
                             success: true,
                             message: format!("Rule '{}' created successfully", name),
@@ -354,7 +357,7 @@ impl Server {
                 } else {
                     ResponsePayload {
                         success: false,
-                        message: "Usage: create <name> <src> <dest> <proto> <port>".to_string(),
+                        message: "Usage: create <name> <src> <dest> <proto> <port> [in|out]".to_string(),
                         data: None,
                         timestamp: ts,
                     }

@@ -124,13 +124,13 @@ impl FirewallManager for OpenWrtFirewall {
         Ok(rules)
     }
 
-    fn enable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn enable_rule(&self, name: &str, _dir: Option<&str>) -> Result<(), FirewallError> {
         let set_arg = format!("firewall.{}.enabled=1", name);
         self.run_cmd("uci", &["set", &set_arg])?;
         self.reload_firewall()
     }
 
-    fn disable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn disable_rule(&self, name: &str, _dir: Option<&str>) -> Result<(), FirewallError> {
         let set_arg = format!("firewall.{}.enabled=0", name);
         self.run_cmd("uci", &["set", &set_arg])?;
         self.reload_firewall()
@@ -143,6 +143,7 @@ impl FirewallManager for OpenWrtFirewall {
         dest: &str,
         proto: &str,
         port: u16,
+        _dir: Option<&str>,
     ) -> Result<(), FirewallError> {
         let name_arg = format!("firewall.{}.name={}", name, name);
         let type_arg = format!("firewall.{}=rule", name);

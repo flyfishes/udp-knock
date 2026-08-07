@@ -157,14 +157,16 @@ impl FirewallManager for WindowsFirewall {
         }
     }
 
-    fn enable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn enable_rule(&self, name: &str, dir: Option<&str>) -> Result<(), FirewallError> {
         let name_arg = format!("name={}", name);
+        let dir_arg = format!("dir={}", dir.unwrap_or("in"));
         match self.run_netsh(&[
             "advfirewall",
             "firewall",
             "set",
             "rule",
             &name_arg,
+            &dir_arg,
             "new",
             "enable=yes",
         ]) {
@@ -181,14 +183,16 @@ impl FirewallManager for WindowsFirewall {
         }
     }
 
-    fn disable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn disable_rule(&self, name: &str, dir: Option<&str>) -> Result<(), FirewallError> {
         let name_arg = format!("name={}", name);
+        let dir_arg = format!("dir={}", dir.unwrap_or("in"));
         match self.run_netsh(&[
             "advfirewall",
             "firewall",
             "set",
             "rule",
             &name_arg,
+            &dir_arg,
             "new",
             "enable=no",
         ]) {
@@ -212,9 +216,10 @@ impl FirewallManager for WindowsFirewall {
         dest: &str,
         proto: &str,
         port: u16,
+        dir: Option<&str>,
     ) -> Result<(), FirewallError> {
         let name_arg = format!("name={}", name);
-        let dir_arg = "dir=in";
+        let dir_val = format!("dir={}", dir.unwrap_or("in"));
         let action_arg = "action=allow";
         let proto_arg = format!("protocol={}", proto);
         let port_arg = format!("localport={}", port);
@@ -226,7 +231,7 @@ impl FirewallManager for WindowsFirewall {
             "add",
             "rule",
             &name_arg,
-            dir_arg,
+            &dir_val,
             action_arg,
             &proto_arg,
             &port_arg,

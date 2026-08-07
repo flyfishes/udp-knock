@@ -25,7 +25,7 @@ impl FirewallManager for LinuxFirewall {
         Ok(rules.clone())
     }
 
-    fn enable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn enable_rule(&self, name: &str, _dir: Option<&str>) -> Result<(), FirewallError> {
         let mut rules = self.rules.lock().unwrap();
         if let Some(rule) = rules.iter_mut().find(|r| r.name == name) {
             rule.enabled = true;
@@ -35,7 +35,7 @@ impl FirewallManager for LinuxFirewall {
         }
     }
 
-    fn disable_rule(&self, name: &str) -> Result<(), FirewallError> {
+    fn disable_rule(&self, name: &str, _dir: Option<&str>) -> Result<(), FirewallError> {
         let mut rules = self.rules.lock().unwrap();
         if let Some(rule) = rules.iter_mut().find(|r| r.name == name) {
             rule.enabled = false;
@@ -52,6 +52,7 @@ impl FirewallManager for LinuxFirewall {
         dest: &str,
         proto: &str,
         port: u16,
+        _dir: Option<&str>,
     ) -> Result<(), FirewallError> {
         let mut rules = self.rules.lock().unwrap();
         rules.retain(|r| r.name != name);

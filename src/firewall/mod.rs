@@ -42,8 +42,8 @@ impl std::error::Error for FirewallError {}
 
 pub trait FirewallManager: Send + Sync {
     fn list_rules(&self) -> Result<Vec<FirewallRule>, FirewallError>;
-    fn enable_rule(&self, name: &str) -> Result<(), FirewallError>;
-    fn disable_rule(&self, name: &str) -> Result<(), FirewallError>;
+    fn enable_rule(&self, name: &str, dir: Option<&str>) -> Result<(), FirewallError>;
+    fn disable_rule(&self, name: &str, dir: Option<&str>) -> Result<(), FirewallError>;
     fn create_rule(
         &self,
         name: &str,
@@ -51,6 +51,7 @@ pub trait FirewallManager: Send + Sync {
         dest: &str,
         proto: &str,
         port: u16,
+        dir: Option<&str>,
     ) -> Result<(), FirewallError>;
     fn delete_rule(&self, name: &str) -> Result<(), FirewallError>;
     fn get_status(&self) -> Result<FirewallStatus, FirewallError>;
