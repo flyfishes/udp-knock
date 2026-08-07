@@ -124,9 +124,16 @@ nohup udp-knock server > /dev/null 2>&1 &
 udp-knock client [OPTIONS]
 ```
 
-#### ① 列出当前所有防火墙规则 (`list`)
+#### ① 列出当前防火墙规则 (`list` & 分页 ` -n`)
 ```bash
+# 默认从第 0 条开始查询（自动包含下一页提示）
 udp-knock client -a list
+
+# 指定从第 25 条开始分页查询
+udp-knock client -a list -n 25
+
+# 结合关键字筛选并分页
+udp-knock client -a list -p rule -n 10
 ```
 
 #### ② 启用/禁用指定防火墙规则 (`enable` / `disable`)

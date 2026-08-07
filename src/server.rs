@@ -12,6 +12,8 @@ pub struct CommandPayload {
     pub action: String,
     #[serde(default)]
     pub params: Vec<String>,
+    #[serde(default)]
+    pub offset: usize,
     pub timestamp: u64,
 }
 
@@ -79,7 +81,7 @@ impl Server {
         let crypto = CryptoManager::new(&self.config.shared_key);
         let firewall: Box<dyn FirewallManager> = get_firewall_manager(&self.platform);
         let rate_limiter = RateLimiter::new(self.config.rate_limit);
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65535];
 
         loop {
             let (amt, src_addr) = match socket.recv_from(&mut buf) {
@@ -93,6 +95,9 @@ impl Server {
             };
 
             let client_ip = src_addr.ip().to_string();
+            if self.debug {
+                log::debug!("Received {} bytes from UDP client {}", amt, src_addr);
+            }
 
             // 1. IP Whitelist check
             if !self.config.allowed_ips.is_empty() && !self.config.allowed_ips.contains(&client_ip)
@@ -141,6 +146,9 @@ impl Server {
             let payload: CommandPayload = match serde_json::from_slice(&plaintext_bytes) {
                 Ok(p) => p,
                 Err(e) => {
+                    if self.debug {
+                        log::warn!("Command JSON parsing failed for {}: {}", client_ip, e);
+                    }
                     let err_resp = ResponsePayload {
                         success: false,
                         message: format!("Command JSON parsing failed: {}", e),
@@ -151,6 +159,16 @@ impl Server {
                     continue;
                 }
             };
+
+            if self.debug {
+                log::debug!(
+                    "Decrypted command from {}: action='{}', params={:?}, timestamp={}",
+                    client_ip,
+                    payload.action,
+                    payload.params,
+                    payload.timestamp
+                );
+            }
 
             // 5. Anti-replay Timestamp Verification (30-second window)
             if let Err(CryptoError::TimestampExpired) =
@@ -167,6 +185,15 @@ impl Server {
 
             // 6. Execute Firewall Command
             let response = self.execute_command(firewall.as_ref(), &payload);
+            if self.debug {
+                log::debug!(
+                    "Executed action '{}' for {}: success={}, message='{}'",
+                    payload.action,
+                    client_ip,
+                    response.success,
+                    response.message
+                );
+            }
 
             // 7. Encrypt and Send Response
             self.send_response(&socket, &src_addr, &crypto, &response);
@@ -181,12 +208,60 @@ impl Server {
         let ts = CryptoManager::current_timestamp();
         match cmd.action.to_lowercase().as_str() {
             "list" => match firewall.list_rules() {
-                Ok(rules) => ResponsePayload {
-                    success: true,
-                    message: "Rules listed successfully".to_string(),
-                    data: serde_json::to_value(rules).ok(),
-                    timestamp: ts,
-                },
+                Ok(rules) => {
+                    let filter = cmd.params.first().map(|s| s.to_lowercase());
+                    let filtered_rules: Vec<_> = if let Some(ref f) = filter {
+                        rules
+                            .into_iter()
+                            .filter(|r| r.name.to_lowercase().contains(f))
+                            .collect()
+                    } else {
+                        rules
+                    };
+
+                    let total_count = filtered_rules.len();
+                    let offset = cmd.offset.min(total_count);
+                    let sliced_rules = &filtered_rules[offset..];
+
+                    // Dynamically calculate payload size to prevent exceeding max UDP datagram limit (4096 bytes)
+                    let mut safe_rules = Vec::new();
+                    for rule in sliced_rules {
+                        safe_rules.push(rule.clone());
+                        let test_resp = ResponsePayload {
+                            success: true,
+                            message: "test".to_string(),
+                            data: serde_json::to_value(&safe_rules).ok(),
+                            timestamp: ts,
+                        };
+                        if serde_json::to_vec(&test_resp).map(|b| b.len()).unwrap_or(0) > 2500 {
+                            safe_rules.pop();
+                            break;
+                        }
+                    }
+
+                    let count = safe_rules.len();
+                    let start_idx = if count > 0 { offset + 1 } else { 0 };
+                    let end_idx = offset + count;
+
+                    let msg = if end_idx < total_count {
+                        format!(
+                            "Listed rules {}-{} of total {} rules (Use '-n {}' to view next page)",
+                            start_idx, end_idx, total_count, end_idx
+                        )
+                    } else {
+                        format!(
+                            "Listed rules {}-{} of total {} rules",
+                            start_idx, end_idx, total_count
+                        )
+                    };
+
+                    ResponsePayload {
+                        success: true,
+                        message: msg,
+                        data: serde_json::to_value(safe_rules).ok(),
+                        timestamp: ts,
+                    }
+                }
                 Err(e) => ResponsePayload {
                     success: false,
                     message: format!("Failed to list rules: {}", e),
@@ -258,7 +333,7 @@ impl Server {
                                 message: "Invalid port parameter".to_string(),
                                 data: None,
                                 timestamp: ts,
-                            }
+                            };
                         }
                     };
 
@@ -342,7 +417,15 @@ impl Server {
     ) {
         if let Ok(json_bytes) = serde_json::to_vec(resp) {
             if let Ok(encrypted_payload) = crypto.encrypt(&json_bytes) {
-                let _ = socket.send_to(encrypted_payload.as_bytes(), target);
+                if let Err(e) = socket.send_to(encrypted_payload.as_bytes(), target) {
+                    log::error!("Failed to send UDP response to {}: {}", target, e);
+                } else if self.debug {
+                    log::debug!(
+                        "Sent encrypted response ({} bytes) to {}",
+                        encrypted_payload.len(),
+                        target
+                    );
+                }
             }
         }
     }

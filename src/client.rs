@@ -18,12 +18,14 @@ impl Client {
         &self,
         action: &str,
         params: &[String],
+        offset: usize,
         override_timeout: Option<u64>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let crypto = CryptoManager::new(&self.config.shared_key);
         let payload = CommandPayload {
             action: action.to_string(),
             params: params.to_vec(),
+            offset,
             timestamp: CryptoManager::current_timestamp(),
         };
 
@@ -43,7 +45,7 @@ impl Client {
 
         socket.send_to(encrypted_payload.as_bytes(), &self.config.server_addr)?;
 
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65535];
         let (amt, _) = socket.recv_from(&mut buf).map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
                 format!("Request timed out after {} seconds (Server may be unreachable or credentials mismatch)", timeout_secs)

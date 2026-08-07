@@ -51,6 +51,10 @@ enum Commands {
         #[arg(short = 'p', long = "params", num_args = 0..)]
         params: Vec<String>,
 
+        /// Starting record offset for pagination (default 0)
+        #[arg(short = 'n', long = "offset", default_value = "0")]
+        offset: usize,
+
         /// Command timeout in seconds
         #[arg(short = 't', long = "timeout")]
         timeout: Option<u64>,
@@ -70,13 +74,14 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize logger based on debug flag
-    let log_level = if cli.debug {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Info
-    };
-    env_logger::Builder::new().filter_level(log_level).init();
+    // Pre-load config to check if debug mode is enabled in config.json
+    let loaded_config = Config::load_or_default(&cli.config).ok();
+    let is_debug = cli.debug || loaded_config.as_ref().map(|c| c.debug).unwrap_or(false);
+
+    // Initialize env_logger to output debug logs if is_debug is set
+    let default_log_level = if is_debug { "debug" } else { "info" };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_log_level))
+        .init();
 
     match cli.command {
         Commands::Init { platform } => {
@@ -92,15 +97,17 @@ fn main() {
             }
         }
         Commands::Server => {
-            let mut cfg = Config::load_or_default(&cli.config).unwrap_or_else(|e| {
-                eprintln!("Failed to load config: {}", e);
-                process::exit(1);
+            let mut cfg = loaded_config.unwrap_or_else(|| {
+                Config::load_or_default(&cli.config).unwrap_or_else(|e| {
+                    eprintln!("Failed to load config: {}", e);
+                    process::exit(1);
+                })
             });
 
             if let Some(p) = cli.platform {
                 cfg.platform = p;
             }
-            if cli.debug {
+            if is_debug {
                 cfg.debug = true;
             }
 
@@ -113,17 +120,20 @@ fn main() {
         Commands::Client {
             action,
             params,
+            offset,
             timeout,
         } => {
-            let cfg = Config::load_or_default(&cli.config).unwrap_or_else(|e| {
-                eprintln!("Failed to load config: {}", e);
-                process::exit(1);
+            let cfg = loaded_config.unwrap_or_else(|| {
+                Config::load_or_default(&cli.config).unwrap_or_else(|e| {
+                    eprintln!("Failed to load config: {}", e);
+                    process::exit(1);
+                })
             });
 
             let act = action.unwrap_or_else(|| "status".to_string());
-            let client = Client::new(cfg.client, cli.debug);
+            let client = Client::new(cfg.client, is_debug);
 
-            if let Err(e) = client.send_command(&act, &params, timeout) {
+            if let Err(e) = client.send_command(&act, &params, offset, timeout) {
                 eprintln!("Client command failed: {}", e);
                 process::exit(1);
             }

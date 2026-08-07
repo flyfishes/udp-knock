@@ -19,16 +19,35 @@ impl WindowsFirewall {
             .output()
             .map_err(|e| FirewallError::CommandFailed(format!("Failed to execute netsh: {}", e)))?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = if !stdout.trim().is_empty() {
+                stdout.trim().to_string()
+            } else if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else {
+                "Operation failed (Requires Administrator privileges or rule does not exist)"
+                    .to_string()
+            };
+
+            if detail.contains("No rules match") || detail.contains("没有与指定标准匹配的规则")
+            {
+                let rule_name = args
+                    .iter()
+                    .find(|a| a.starts_with("name="))
+                    .map(|s| &s[5..])
+                    .unwrap_or("unknown");
+                return Err(FirewallError::RuleNotFound(rule_name.to_string()));
+            }
+
             return Err(FirewallError::CommandFailed(format!(
                 "netsh {:?} failed: {}",
-                args, stderr
+                args, detail
             )));
         }
 
-        // Handle possible GBK encoding on Chinese Windows by checking UTF-8 or lossy conversion
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(stdout)
     }
 

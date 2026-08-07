@@ -132,6 +132,7 @@ udp-knock [OPTIONS] <COMMAND>
 |------|------|
 | `-a, --action <ACTION>` | 命令名称 (list/enable/disable/create/delete/status) |
 | `-p, --params <PARAMS>` | 命令参数列表 |
+| `-n, --offset <OFFSET>` | 分页索引起始偏移量（默认 0） |
 | `-t, --timeout <SECONDS>` | 超时时间（秒） |
 
 ---
