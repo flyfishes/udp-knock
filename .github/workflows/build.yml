@@ -38,7 +38,7 @@ jobs:
         override: true
         
     - name: Cache cargo registry
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
@@ -55,7 +55,7 @@ jobs:
       run: cargo test --verbose
       
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: udp-knock-${{ matrix.os }}-${{ matrix.rust }}
         path: target/release/udp-knock*
@@ -91,7 +91,7 @@ jobs:
         cargo build --target ${{ matrix.target }} --release --features openwrt
         
     - name: Upload OpenWrt artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: udp-knock-openwrt-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/udp-knock
@@ -125,7 +125,7 @@ jobs:
         cross build --target ${{ matrix.target }} --release --features all-platforms
         
     - name: Upload cross artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: udp-knock-${{ matrix.target }}
         path: target/${{ matrix.target }}/release/udp-knock

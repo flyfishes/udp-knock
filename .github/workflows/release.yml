@@ -42,7 +42,7 @@ jobs:
           > udp-knock-${{ matrix.target.os }}-${{ matrix.target.arch }}.sha256
         
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: release-${{ matrix.target.os }}-${{ matrix.target.arch }}
         path: udp-knock-*
@@ -51,7 +51,7 @@ jobs:
     needs: build-release
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
       with:
         path: artifacts
         
