@@ -2,20 +2,28 @@
 name = "udp-knock"
 version = "1.0.0"
 edition = "2021"
-authors = ["flyfishes <email@example.com>"]
+authors = ["flyfishes <your.email@example.com>"]
 description = "Secure UDP Knock tool for remote firewall management"
 license = "MIT"
 repository = "https://github.com/flyfishes/udp-knock"
 readme = "README.md"
 keywords = ["udp", "knock", "firewall", "security", "openwrt"]
 categories = ["network-programming", "security", "command-line-utilities"]
+exclude = [
+    ".github/",
+    "openwrt/",
+    "configs/",
+    "scripts/",
+    "tests/",
+    "docs/",
+]
 
 [features]
 default = []
 openwrt = ["firewall-openwrt"]
 linux = ["firewall-linux"]
 windows = ["firewall-windows"]
-all-platforms = ["linux", "windows"]
+all-platforms = ["openwrt", "linux", "windows"]
 
 [dependencies]
 # 加密相关
@@ -53,9 +61,6 @@ windows = { version = "0.52", features = [
     "Win32_System_Com",
 ] }
 
-[target.'cfg(target_os="openwrt")'.dependencies]
-# OpenWrt使用uci命令，通过std::process调用
-
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
@@ -71,3 +76,7 @@ panic = "abort"
 [profile.dev]
 opt-level = 0
 debug = true
+
+[[bin]]
+name = "udp-knock"
+path = "src/main.rs"
