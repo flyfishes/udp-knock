@@ -1,3 +1,5 @@
+// src/lib.rs
+
 pub mod config;
 pub mod crypto;
 pub mod server;

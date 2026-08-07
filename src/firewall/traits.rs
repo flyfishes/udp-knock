@@ -1,8 +1,11 @@
+// src/firewall/traits.rs
+
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 
 pub type FirewallResult<T> = Result<T, Box<dyn Error>>;
 
+/// 防火墙规则
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirewallRule {
     pub name: String,
@@ -17,6 +20,7 @@ pub struct FirewallRule {
     pub description: String,
 }
 
+/// 防火墙状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirewallStatus {
     pub active: bool,
@@ -26,6 +30,7 @@ pub struct FirewallStatus {
     pub zones: Vec<String>,
 }
 
+/// 防火墙响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirewallResponse {
     pub success: bool,
@@ -63,4 +68,3 @@ pub trait FirewallManager: Send + Sync {
     /// 重新加载防火墙配置
     fn reload(&self) -> FirewallResult<()>;
 }
-

@@ -1,0 +1,30 @@
+{
+  "server": {
+    "bind_addr": "0.0.0.0:8888",
+    "allowed_clients": [],
+    "firewall": {
+      "firewall_type": "auto",
+      "default_zone": "public",
+      "forward_chain": "FORWARD",
+      "input_chain": "INPUT",
+      "output_chain": "OUTPUT"
+    },
+    "rate_limit": {
+      "max_requests_per_minute": 60,
+      "burst_size": 10
+    }
+  },
+  "client": {
+    "server_addr": "127.0.0.1:8888",
+    "timeout_secs": 5,
+    "retry_count": 3
+  },
+  "security": {
+    "shared_key": "change_this_default_key_1234567890",
+    "timestamp_window_secs": 30,
+    "max_packet_size": 4096,
+    "key_derivation_iterations": 100000
+  },
+  "debug": false,
+  "platform": "unknown"
+}

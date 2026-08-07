@@ -1,3 +1,5 @@
+// src/crypto/mod.rs
+
 mod security;
 
 pub use security::Security;

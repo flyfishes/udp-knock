@@ -1,9 +1,9 @@
-#![cfg(target_os = "openwrt")]
+// src/firewall/openwrt.rs
+
 use super::traits::*;
 use crate::config::Config;
-use log::{debug, error};
+use log::{debug, warn};
 use std::process::Command;
-use std::str;
 
 pub struct OpenWrtFirewall {
     config: Config,
@@ -45,7 +45,7 @@ impl OpenWrtFirewall {
 
     fn exec_firewall_reload(&self) -> Result<(), String> {
         if self.debug {
-            debug("重新加载防火墙配置...");
+            debug!("重新加载防火墙配置...");
         }
         
         // OpenWrt防火墙重载
@@ -64,6 +64,26 @@ impl OpenWrtFirewall {
         
         Ok(())
     }
+
+    fn parse_rule_from_uci(&self, name: &str) -> Result<FirewallRule, String> {
+        let src = self.exec_uci(&["get", &format!("firewall.{}.src", name)])?;
+        let dest = self.exec_uci(&["get", &format!("firewall.{}.dest", name)])?;
+        let proto = self.exec_uci(&["get", &format!("firewall.{}.proto", name)])?;
+        let ports = self.exec_uci(&["get", &format!("firewall.{}.dest_port", name)])?;
+        let enabled_str = self.exec_uci(&["get", &format!("firewall.{}.enabled", name)])?;
+        let enabled = enabled_str == "1";
+        
+        Ok(FirewallRule {
+            name: name.to_string(),
+            src,
+            dest,
+            proto,
+            ports,
+            enabled,
+            target: "ACCEPT".to_string(),
+            description: String::new(),
+        })
+    }
 }
 
 impl FirewallManager for OpenWrtFirewall {
@@ -71,7 +91,6 @@ impl FirewallManager for OpenWrtFirewall {
         let output = self.exec_uci(&["show", "firewall"])
             .map_err(|e| format!("获取防火墙状态失败: {}", e))?;
         
-        // 解析输出
         let rules_count = output.lines()
             .filter(|line| line.contains(".redirect"))
             .count();
@@ -90,57 +109,23 @@ impl FirewallManager for OpenWrtFirewall {
             .map_err(|e| format!("列出规则失败: {}", e))?;
         
         let mut rules = Vec::new();
-        let mut current_rule: Option<FirewallRule> = None;
+        let mut current_name: Option<String> = None;
         
         for line in output.lines() {
             if line.contains(".redirect=") {
-                if let Some(rule) = current_rule.take() {
-                    rules.push(rule);
-                }
-                
-                // 提取规则名
                 if let Some(name) = line.split('.').nth(1) {
                     if let Some(name) = name.split('=').next() {
-                        current_rule = Some(FirewallRule {
-                            name: name.to_string(),
-                            src: String::new(),
-                            dest: String::new(),
-                            proto: String::new(),
-                            ports: String::new(),
-                            enabled: true,
-                            target: String::new(),
-                            description: String::new(),
-                        });
+                        current_name = Some(name.to_string());
                     }
                 }
-            } else if let Some(rule) = &mut current_rule {
-                // 解析规则属性
-                if line.contains(".src=") {
-                    if let Some(src) = line.split('=').last() {
-                        rule.src = src.to_string();
-                    }
-                } else if line.contains(".dest=") {
-                    if let Some(dest) = line.split('=').last() {
-                        rule.dest = dest.to_string();
-                    }
-                } else if line.contains(".proto=") {
-                    if let Some(proto) = line.split('=').last() {
-                        rule.proto = proto.to_string();
-                    }
-                } else if line.contains(".dest_port=") {
-                    if let Some(ports) = line.split('=').last() {
-                        rule.ports = ports.to_string();
-                    }
-                } else if line.contains(".enabled=") {
-                    if let Some(enabled) = line.split('=').last() {
-                        rule.enabled = enabled == "1";
+            } else if let Some(name) = &current_name {
+                if line.contains(&format!("{}.src=", name)) {
+                    if let Ok(rule) = self.parse_rule_from_uci(name) {
+                        rules.push(rule);
+                        current_name = None;
                     }
                 }
             }
-        }
-        
-        if let Some(rule) = current_rule.take() {
-            rules.push(rule);
         }
         
         Ok(rules)

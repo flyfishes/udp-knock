@@ -1,6 +1,7 @@
+// src/main.rs
+
 use clap::{Parser, Subcommand};
 use log::{info, error};
-use std::path::Path;
 use udp_knock::{Config, Server, Client};
 
 #[derive(Parser)]
@@ -66,11 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("为平台 {} 生成配置文件", platform);
         
         let config = Config::default_for_platform(&platform)?;
-        let json = serde_json::to_string_pretty(&config)?;
-        std::fs::write(&output, json)?;
+        config.save_to_file(&output)?;
         
-        println!("配置文件已生成: {}", output);
-        println!("请修改配置文件中的密钥和地址设置！");
+        println!("✅ 配置文件已生成: {}", output);
+        println!("⚠️  请修改配置文件中的密钥和地址设置！");
         return Ok(());
     }
 
