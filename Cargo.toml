@@ -1,0 +1,73 @@
+[package]
+name = "udp-knock"
+version = "1.0.0"
+edition = "2021"
+authors = ["flyfishes <email@example.com>"]
+description = "Secure UDP Knock tool for remote firewall management"
+license = "MIT"
+repository = "https://github.com/flyfishes/udp-knock"
+readme = "README.md"
+keywords = ["udp", "knock", "firewall", "security", "openwrt"]
+categories = ["network-programming", "security", "command-line-utilities"]
+
+[features]
+default = []
+openwrt = ["firewall-openwrt"]
+linux = ["firewall-linux"]
+windows = ["firewall-windows"]
+all-platforms = ["linux", "windows"]
+
+[dependencies]
+# 加密相关
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.21"
+hmac = "0.12"
+sha2 = "0.10"
+argon2 = "0.5"
+
+# 网络和序列化
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+url = "2.5"
+
+# 系统操作
+nix = "0.27"
+which = "5.0"
+log = "0.4"
+env_logger = "0.10"
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+
+# 平台特定
+[target.'cfg(target_os="linux")'.dependencies]
+iptables = "0.3"
+
+[target.'cfg(target_os="windows")'.dependencies]
+winapi = { version = "0.3", features = ["winerror", "netfw", "combaseapi"] }
+windows = { version = "0.52", features = [
+    "Win32_NetworkManagement_NetFirewall",
+    "Win32_System_Com",
+] }
+
+[target.'cfg(target_os="openwrt")'.dependencies]
+# OpenWrt使用uci命令，通过std::process调用
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.12"
+tempfile = "3.8"
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

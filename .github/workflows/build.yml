@@ -1,0 +1,131 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, nightly]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: ${{ matrix.rust }}
+        target: ${{ matrix.target }}
+        override: true
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
+    - name: Build
+      run: cargo build --release --verbose
+      
+    - name: Run tests
+      run: cargo test --verbose
+      
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: udp-knock-${{ matrix.os }}-${{ matrix.rust }}
+        path: target/release/udp-knock*
+        if-no-files-found: error
+
+  build-openwrt:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [
+          aarch64-unknown-linux-gnu,
+          armv7-unknown-linux-gnueabihf,
+          x86_64-unknown-linux-gnu
+        ]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+        
+    - name: Install OpenWrt SDK dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev pkg-config
+        
+    - name: Build for OpenWrt
+      run: |
+        RUSTFLAGS="-C target-cpu=cortex-a53 -C opt-level=z" \
+        cargo build --target ${{ matrix.target }} --release --features openwrt
+        
+    - name: Upload OpenWrt artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: udp-knock-openwrt-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/udp-knock
+
+  build-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [
+          aarch64-unknown-linux-musl,
+          armv7-unknown-linux-musleabihf,
+          arm-unknown-linux-musleabihf,
+          x86_64-unknown-linux-musl,
+          i686-unknown-linux-musl
+        ]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+        
+    - name: Install cross
+      run: cargo install cross
+        
+    - name: Build with cross
+      run: |
+        cross build --target ${{ matrix.target }} --release --features all-platforms
+        
+    - name: Upload cross artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: udp-knock-${{ matrix.target }}
+        path: target/${{ matrix.target }}/release/udp-knock

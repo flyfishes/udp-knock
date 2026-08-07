@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [
+          { os: linux, arch: x86_64, target: x86_64-unknown-linux-gnu },
+          { os: linux, arch: aarch64, target: aarch64-unknown-linux-gnu },
+          { os: linux, arch: armv7, target: armv7-unknown-linux-gnueabihf },
+          { os: linux, arch: x86_64-musl, target: x86_64-unknown-linux-musl },
+          { os: windows, arch: x86_64, target: x86_64-pc-windows-msvc },
+          { os: macos, arch: x86_64, target: x86_64-apple-darwin },
+          { os: macos, arch: aarch64, target: aarch64-apple-darwin }
+        ]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target.target }}
+        override: true
+        
+    - name: Build release binary
+      run: |
+        cargo build --target ${{ matrix.target.target }} --release
+        tar -czf udp-knock-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz \
+          -C target/${{ matrix.target.target }}/release udp-knock
+        
+    - name: Create checksum
+      run: |
+        sha256sum udp-knock-${{ matrix.target.os }}-${{ matrix.target.arch }}.tar.gz \
+          > udp-knock-${{ matrix.target.os }}-${{ matrix.target.arch }}.sha256
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: release-${{ matrix.target.os }}-${{ matrix.target.arch }}
+        path: udp-knock-*
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: artifacts/**/*
+        generate_release_notes: true
+        draft: false
+        prerelease:
