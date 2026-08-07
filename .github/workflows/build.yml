@@ -1,12 +1,32 @@
 name: Build & Release
 
 on:
+  # 1. Tag 推送触发发布
   push:
     tags:
       - 'v*'
+      - 'v*.*'
+      - 'v*.*.*'
+  
+  # 2. PR 触发检查（仅针对默认分支）
   pull_request:
-    branches: [main]
+    branches:
+      - main
+  
+  # 3. 直接推送到默认分支也触发检查
+  push:
+    branches:
+      - main
+      - master
+  
+  # 4. 手动触发（带可选参数）
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force create release (skip tag check)'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,7 +37,7 @@ permissions:
 
 jobs:
   # ============================================================
-  # Job 1: 代码检查与单元测试 (仅在 PR 和 tag 触发时运行)
+  # Job 1: 代码检查与测试
   # ============================================================
   check-and-test:
     name: Check & Test
@@ -37,25 +57,27 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Clippy lint (all features)
+      - name: Clippy lint
         run: cargo clippy --all-features -- -D warnings
 
       - name: Run tests
         run: cargo test --all-features
 
   # ============================================================
-  # Job 2: 多平台构建矩阵
+  # Job 2: 多平台构建
   # ============================================================
   build:
     name: Build ${{ matrix.artifact }}
     needs: check-and-test
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # 仅在 tag 推送或手动强制发布时构建
+    if: |
+      startsWith(github.ref, 'refs/tags/v') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.force_release == 'true')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # --- Windows x86_64 ---
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             features: windows
@@ -63,7 +85,6 @@ jobs:
             cross: false
             upx: false
 
-          # --- Linux x86_64 (glibc) ---
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             features: linux
@@ -71,7 +92,6 @@ jobs:
             cross: false
             upx: true
 
-          # --- OpenWrt aarch64 (musl static) ---
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             features: openwrt
@@ -79,7 +99,6 @@ jobs:
             cross: true
             upx: true
 
-          # --- OpenWrt x86_64 (musl static) ---
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             features: openwrt
@@ -94,24 +113,24 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.75"
-          components: rustfmt, clippy
-          targets: ${{ matrix.target || '' }}
-          
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}-${{ matrix.features }}
 
-      # ---- Native build (Windows / Linux glibc) ----
+      # Native build
       - name: Build (native)
         if: ${{ !matrix.cross }}
         shell: bash
         run: |
+          EXT=""
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then EXT=".exe"; fi
           cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
-          echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock${{ matrix.target == 'x86_64-pc-windows-msvc' && '.exe' || '' }}" >> $GITHUB_ENV
+          echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock${EXT}" >> $GITHUB_ENV
 
-      # ---- Cross build (OpenWrt musl targets) ----
+      # Cross build
       - name: Install cross
         if: ${{ matrix.cross }}
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
@@ -122,20 +141,20 @@ jobs:
           cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
           echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock" >> $GITHUB_ENV
 
-      # ---- UPX compression (Linux / OpenWrt only) ----
-      - name: Install UPX
+      # UPX compression
+      - name: Compress with UPX
         if: ${{ matrix.upx }}
         uses: crazy-max/ghaction-upx@v3
         with:
           version: latest
 
-      - name: Compress with UPX
+      - name: Run UPX
         if: ${{ matrix.upx }}
         run: |
-          upx --best --lzma "${{ env.BUILD_OUTPUT }}"
+          upx --best --lzma "${{ env.BUILD_OUTPUT }}" || echo "UPX failed, keeping original"
           ls -lh "${{ env.BUILD_OUTPUT }}"
 
-      # ---- Rename artifact & generate checksum ----
+      # Package
       - name: Package artifact
         shell: bash
         run: |
@@ -153,12 +172,14 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # Job 3: 合并校验文件 + 创建 GitHub Release
+  # Job 3: 创建 Release
   # ============================================================
   release:
     name: Create Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: |
+      startsWith(github.ref, 'refs/tags/v') || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.force_release == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -169,61 +190,34 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate combined SHA256SUMS
+      - name: Generate SHA256SUMS
         run: |
           cd dist
           cat *.sha256 > SHA256SUMS.txt
-          echo "=== SHA256SUMS.txt ==="
-          cat SHA256SUMS.txt
-          echo ""
-          echo "=== Artifacts ==="
           ls -lh
+          cat SHA256SUMS.txt
 
-      - name: Extract release notes from tag
-        id: tag_info
+      - name: Get version from tag
+        id: version
+        shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=manual-$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "version=${TAG}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag_info.outputs.tag }}
-          name: "UDP Knock ${{ steps.tag_info.outputs.tag }}"
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "UDP Knock ${{ steps.version.outputs.version }}"
           draft: false
-          prerelease: ${{ contains(steps.tag_info.outputs.tag, '-') }}
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           files: |
             dist/udp-knock-*
             dist/SHA256SUMS.txt
-          body: |
-            ## UDP Knock ${{ steps.tag_info.outputs.tag }}
-
-            ### 📦 Downloads
-
-            | Platform | Architecture | File |
-            |----------|-------------|------|
-            | Windows | x86_64 | `udp-knock-windows-x86_64.exe` |
-            | Linux | x86_64 (glibc) | `udp-knock-linux-x86_64` |
-            | OpenWrt | aarch64 Cortex-A53 | `udp-knock-openwrt-aarch64` |
-            | OpenWrt | x86_64 | `udp-knock-openwrt-x86_64` |
-
-            ### ✅ Verify Integrity
-            ```bash
-            sha256sum -c SHA256SUMS.txt
-            ```
-
-            ### 🔧 Usage
-            ```bash
-            # Generate config
-            ./udp-knock init --platform openwrt
-
-            # Start server
-            ./udp-knock server
-
-            # Send command
-            ./udp-knock client --action list
-            ```
-
-            _Built automatically by GitHub Actions._
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
