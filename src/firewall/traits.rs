@@ -64,27 +64,3 @@ pub trait FirewallManager: Send + Sync {
     fn reload(&self) -> FirewallResult<()>;
 }
 
-/// 防火墙工厂
-pub fn create_firewall_manager(config: &crate::config::Config) 
-    -> FirewallResult<Box<dyn FirewallManager>> {
-    
-    let firewall_type = &config.server.firewall.firewall_type;
-    let platform = &config.platform;
-    
-    #[cfg(feature = "firewall-openwrt")]
-    if firewall_type == "openwrt" || (firewall_type == "auto" && platform == "openwrt") {
-        return Ok(Box::new(super::openwrt::OpenWrtFirewall::new(config)?));
-    }
-    
-    #[cfg(feature = "firewall-linux")]
-    if firewall_type == "iptables" || (firewall_type == "auto" && platform == "linux") {
-        return Ok(Box::new(super::linux::LinuxFirewall::new(config)?));
-    }
-    
-    #[cfg(feature = "firewall-windows")]
-    if firewall_type == "windows" || (firewall_type == "auto" && platform == "windows") {
-        return Ok(Box::new(super::windows::WindowsFirewall::new(config)?));
-    }
-    
-    Err(format!("不支持的防火墙类型: {} (平台: {})", firewall_type, platform).into())
-}

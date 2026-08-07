@@ -20,9 +20,10 @@ exclude = [
 
 [features]
 default = []
-openwrt = ["firewall-openwrt"]
-linux = ["firewall-linux"]
-windows = ["firewall-windows"]
+# 定义平台特性，不需要依赖其他特性
+openwrt = []
+linux = []
+windows = []
 all-platforms = ["openwrt", "linux", "windows"]
 
 [dependencies]
