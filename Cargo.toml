@@ -18,12 +18,12 @@ exclude = [
     "docs/",
 ]
 
+
 [features]
 default = []
-# 定义平台特性，不需要依赖其他特性
 openwrt = []
 linux = []
-windows = []
+windows = []  # windows 现在只是一个标志
 all-platforms = ["openwrt", "linux", "windows"]
 
 [dependencies]
@@ -51,17 +51,23 @@ clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
 thiserror = "1.0"
 
-# 平台特定
+# 平台特定 - Linux
 [target.'cfg(target_os="linux")'.dependencies]
 iptables = "0.3"
 
+# 平台特定 - Windows（只使用 winapi）
 [target.'cfg(target_os="windows")'.dependencies]
-winapi = { version = "0.3", features = ["winerror", "netfw", "combaseapi"] }
-windows = { version = "0.52", features = [
-    "Win32_NetworkManagement_NetFirewall",
-    "Win32_System_Com",
+winapi = { version = "0.3", features = [
+    "winerror", 
+    "netfw", 
+    "combaseapi",
+    "objbase",
+    "oleauto",
+    "unknwnbase",
+    "synchapi",
 ] }
 
+# 开发依赖
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
@@ -73,11 +79,3 @@ opt-level = "z"
 strip = true
 codegen-units = 1
 panic = "abort"
-
-[profile.dev]
-opt-level = 0
-debug = true
-
-[[bin]]
-name = "udp-knock"
-path = "src/main.rs"
