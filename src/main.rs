@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::process;
+use std::fs::OpenOptions;
 
 mod client;
 mod config;
@@ -31,6 +32,10 @@ struct Cli {
     /// Target platform (openwrt, linux, windows)
     #[arg(short = 'p', long = "platform")]
     platform: Option<String>,
+
+    /// Log file path (append logs to file)
+    #[arg(short = 'l', long = "log-file")]
+    log_file: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -80,8 +85,24 @@ fn main() {
 
     // Initialize env_logger to output debug logs if is_debug is set
     let default_log_level = if is_debug { "debug" } else { "info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_log_level))
-        .init();
+    let mut builder = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(default_log_level)
+    );
+    
+    // 如果指定了日志文件，同时输出到文件
+    if let Some(log_path) = &cli.log_file {
+        if let Ok(file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path) 
+        {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        } else {
+            eprintln!("Warning: Cannot open log file '{}', using stderr", log_path);
+        }
+    }
+    
+    builder.init();
 
     match cli.command {
         Commands::Init { platform } => {

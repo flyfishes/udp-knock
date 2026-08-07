@@ -25,6 +25,8 @@ pub struct ServerConfig {
     pub allowed_ips: Vec<String>,
     #[serde(default = "default_rate_limit")]
     pub rate_limit: u32,
+    #[serde(default)]
+    pub log_file: Option<String>,
 }
 
 fn default_rate_limit() -> u32 {
@@ -51,6 +53,7 @@ impl Default for Config {
                 shared_key: "change_this_shared_secret_key".to_string(),
                 allowed_ips: Vec::new(),
                 rate_limit: 60,
+                log_file: None,
             },
             client: ClientConfig {
                 server_addr: "127.0.0.1:9999".to_string(),
