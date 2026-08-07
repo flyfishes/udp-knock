@@ -2,43 +2,23 @@
 name = "udp-knock"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+authors = ["UDP Knock Authors"]
+description = "A secure remote firewall management tool using encrypted UDP packets"
 
 [features]
-default = []
+default = ["openwrt"]
 openwrt = []
 linux = []
 windows = []
 
 [dependencies]
-# Async Runtime
-tokio = { version = "1", features = ["net", "time", "macros", "rt", "signal"] }
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# Crypto
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 aes-gcm = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
-base64 = "0.22"
 rand = "0.8"
-
-# Utilities
-anyhow = "1"
-thiserror = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-governor = "0.6"
-chrono = { version = "0.4", features = ["serde"] }
-
-[profile.release]
-opt-level = "z"
-lto = true
-strip = true
-panic = "abort"
-codegen-units = 1
+base64 = "0.22"
+log = "0.4"
+env_logger = "0.11"

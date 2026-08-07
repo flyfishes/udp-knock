@@ -1,174 +1,349 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::config::ServerConfig;
+use crate::crypto::{CryptoError, CryptoManager};
+use crate::firewall::{get_firewall_manager, FirewallManager};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::{SocketAddr, UdpSocket};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-use governor::{Quota, RateLimiter};
-use tokio::net::UdpSocket;
-use tracing::{debug, warn};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandPayload {
+    pub action: String,
+    #[serde(default)]
+    pub params: Vec<String>,
+    pub timestamp: u64,
+}
 
-use crate::config::Config;
-use crate::crypto::CryptoContext;
-use crate::error::AppError;
-use crate::firewall::{create_firewall_manager, FirewallManager};
-use crate::protocol::{Request, Response};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsePayload {
+    pub success: bool,
+    pub message: String,
+    pub data: Option<serde_json::Value>,
+    pub timestamp: u64,
+}
+
+struct RateLimiter {
+    requests: Mutex<HashMap<String, Vec<Instant>>>,
+    max_per_minute: u32,
+}
+
+impl RateLimiter {
+    fn new(max_per_minute: u32) -> Self {
+        Self {
+            requests: Mutex::new(HashMap::new()),
+            max_per_minute,
+        }
+    }
+
+    fn check_and_record(&self, ip: &str) -> bool {
+        if self.max_per_minute == 0 {
+            return true;
+        }
+
+        let mut map = self.requests.lock().unwrap();
+        let now = Instant::now();
+        let window = Duration::from_secs(60);
+
+        let timestamps = map.entry(ip.to_string()).or_default();
+        timestamps.retain(|t| now.duration_since(*t) < window);
+
+        if timestamps.len() >= self.max_per_minute as usize {
+            false
+        } else {
+            timestamps.push(now);
+            true
+        }
+    }
+}
 
 pub struct Server {
-    config: Arc<Config>,
-    crypto: Arc<CryptoContext>,
-    fw: Arc<dyn FirewallManager>,
-    limiter: Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>>,
+    config: ServerConfig,
+    platform: String,
+    debug: bool,
 }
 
 impl Server {
-    pub fn new(config: Config) -> Result<Self, AppError> {
-        let crypto = CryptoContext::new(&config.shared_secret);
-        let fw = create_firewall_manager(&config.platform)?;
-        let quota = Quota::per_minute(std::num::NonZeroU64::new(config.rate_limit_rpm.max(1)).unwrap());
-        let limiter = RateLimiter::direct(quota);
-
-        Ok(Self {
-            config: Arc::new(config),
-            crypto: Arc::new(crypto),
-            fw: Arc::from(fw),
-            limiter: Arc::new(limiter),
-        })
+    pub fn new(config: ServerConfig, platform: String, debug: bool) -> Self {
+        Self {
+            config,
+            platform,
+            debug,
+        }
     }
 
-    pub async fn run(&self) -> Result<(), AppError> {
-        let socket = UdpSocket::bind(&self.config.listen_addr).await?;
-        tracing::info!("UDP Knock server listening on {}", self.config.listen_addr);
+    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let socket = UdpSocket::bind(&self.config.bind_addr)?;
+        log::info!("Server running on UDP {}", self.config.bind_addr);
 
+        let crypto = CryptoManager::new(&self.config.shared_key);
+        let firewall: Box<dyn FirewallManager> = get_firewall_manager(&self.platform);
+        let rate_limiter = RateLimiter::new(self.config.rate_limit);
         let mut buf = [0u8; 4096];
+
         loop {
-            let (len, addr) = match socket.recv_from(&mut buf).await {
-                Ok(v) => v,
+            let (amt, src_addr) = match socket.recv_from(&mut buf) {
+                Ok(res) => res,
                 Err(e) => {
-                    warn!("recv_from error: {}", e);
+                    if self.debug {
+                        log::error!("UDP receive error: {}", e);
+                    }
                     continue;
                 }
             };
 
-            // Process in spawned task to avoid blocking listener
-            let this = self.clone_refs();
-            let packet = buf[..len].to_vec();
-            let socket = socket.clone(); // UdpSocket is Clone-safe for send_to
+            let client_ip = src_addr.ip().to_string();
 
-            tokio::spawn(async move {
-                this.handle_packet(&socket, &packet, addr).await;
-            });
+            // 1. IP Whitelist check
+            if !self.config.allowed_ips.is_empty() && !self.config.allowed_ips.contains(&client_ip)
+            {
+                if self.debug {
+                    log::warn!("Silent drop: IP {} not in whitelist", client_ip);
+                }
+                continue;
+            }
+
+            // 2. Rate Limiting
+            if !rate_limiter.check_and_record(&client_ip) {
+                if self.debug {
+                    log::warn!("Silent drop: IP {} exceeded rate limit", client_ip);
+                }
+                continue;
+            }
+
+            let raw_data = match std::str::from_utf8(&buf[..amt]) {
+                Ok(s) => s.trim(),
+                Err(_) => {
+                    if self.debug {
+                        log::warn!("Silent drop: Invalid UTF-8 from {}", client_ip);
+                    }
+                    continue;
+                }
+            };
+
+            // 3. Decrypt payload (AES-256-GCM + HMAC verification)
+            let plaintext_bytes = match crypto.decrypt(raw_data) {
+                Ok(data) => data,
+                Err(err) => {
+                    if self.debug {
+                        log::warn!(
+                            "Silent drop: Decryption/HMAC failed for {}: {}",
+                            client_ip,
+                            err
+                        );
+                    }
+                    // Silent drop on decryption or HMAC failure
+                    continue;
+                }
+            };
+
+            // 4. Parse Command Payload
+            let payload: CommandPayload = match serde_json::from_slice(&plaintext_bytes) {
+                Ok(p) => p,
+                Err(e) => {
+                    let err_resp = ResponsePayload {
+                        success: false,
+                        message: format!("Command JSON parsing failed: {}", e),
+                        data: None,
+                        timestamp: CryptoManager::current_timestamp(),
+                    };
+                    self.send_response(&socket, &src_addr, &crypto, &err_resp);
+                    continue;
+                }
+            };
+
+            // 5. Anti-replay Timestamp Verification (30-second window)
+            if let Err(CryptoError::TimestampExpired) =
+                CryptoManager::verify_timestamp(payload.timestamp, None)
+            {
+                if self.debug {
+                    log::warn!(
+                        "Silent drop: Timestamp expired for request from {}",
+                        client_ip
+                    );
+                }
+                continue;
+            }
+
+            // 6. Execute Firewall Command
+            let response = self.execute_command(firewall.as_ref(), &payload);
+
+            // 7. Encrypt and Send Response
+            self.send_response(&socket, &src_addr, &crypto, &response);
         }
     }
 
-    async fn handle_packet(&self, socket: &UdpSocket, packet: &[u8], addr: SocketAddr) {
-        // 1. IP whitelist check
-        if !self.config.allowed_ips.is_empty() {
-            let ip = addr.ip().to_string();
-            if !self.config.allowed_ips.contains(&ip) {
-                debug!("Rejected IP: {}", ip);
-                return; // Silent drop
-            }
-        }
-
-        // 2. Rate limit
-        if self.limiter.check().is_err() {
-            debug!("Rate limited: {}", addr);
-            return; // Silent drop
-        }
-
-        // 3. Decrypt + verify
-        let (plaintext, timestamp) = match self.crypto.open(packet) {
-            Ok(v) => v,
-            Err(e) => {
-                debug!("Crypto failure from {}: {}", addr, e);
-                return; // Silent drop
-            }
-        };
-
-        // 4. Timestamp validation
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let window = self.config.time_window_secs;
-        if now.abs_diff(timestamp) > window {
-            debug!("Timestamp expired from {}: {} vs {}", addr, timestamp, now);
-            return; // Silent drop
-        }
-
-        // 5. Parse command
-        let request: Request = match serde_json::from_slice(&plaintext) {
-            Ok(r) => r,
-            Err(e) => {
-                debug!("Parse error from {}: {}", addr, e);
-                return; // Silent drop for malformed encrypted payloads
-            }
-        };
-
-        // 6. Execute
-        let response = self.execute(request).await;
-
-        // 7. Encrypt and respond
-        let resp_json = match serde_json::to_vec(&response) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Response serialization error: {}", e);
-                return;
-            }
-        };
-
-        let resp_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        match self.crypto.seal(&resp_json, resp_ts) {
-            Ok(resp_packet) => {
-                if let Err(e) = socket.send_to(&resp_packet, addr).await {
-                    warn!("send_to error: {}", e);
+    fn execute_command(
+        &self,
+        firewall: &dyn FirewallManager,
+        cmd: &CommandPayload,
+    ) -> ResponsePayload {
+        let ts = CryptoManager::current_timestamp();
+        match cmd.action.to_lowercase().as_str() {
+            "list" => match firewall.list_rules() {
+                Ok(rules) => ResponsePayload {
+                    success: true,
+                    message: "Rules listed successfully".to_string(),
+                    data: serde_json::to_value(rules).ok(),
+                    timestamp: ts,
+                },
+                Err(e) => ResponsePayload {
+                    success: false,
+                    message: format!("Failed to list rules: {}", e),
+                    data: None,
+                    timestamp: ts,
+                },
+            },
+            "enable" => {
+                if let Some(rule_name) = cmd.params.first() {
+                    match firewall.enable_rule(rule_name) {
+                        Ok(_) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' enabled successfully", rule_name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Err(e) => ResponsePayload {
+                            success: false,
+                            message: format!("Failed to enable rule: {}", e),
+                            data: None,
+                            timestamp: ts,
+                        },
+                    }
+                } else {
+                    ResponsePayload {
+                        success: false,
+                        message: "Missing rule name parameter".to_string(),
+                        data: None,
+                        timestamp: ts,
+                    }
                 }
             }
-            Err(e) => warn!("Response encryption error: {}", e),
-        }
-    }
-
-    async fn execute(&self, req: Request) -> Response {
-        match req {
-            Request::List => match self.fw.list_rules().await {
-                Ok(data) => Response::ok_with_data("Rules listed", data),
-                Err(e) => Response::err(format!("List failed: {}", e)),
-            },
-            Request::Enable { name } => match self.fw.enable_rule(&name).await {
-                Ok(_) => Response::ok(format!("Rule '{}' enabled", name)),
-                Err(e) => Response::err(format!("Enable failed: {}", e)),
-            },
-            Request::Disable { name } => match self.fw.disable_rule(&name).await {
-                Ok(_) => Response::ok(format!("Rule '{}' disabled", name)),
-                Err(e) => Response::err(format!("Disable failed: {}", e)),
-            },
-            Request::Create { name, src, dest, proto, port } => {
-                match self.fw.create_rule(&name, &src, &dest, &proto, &port).await {
-                    Ok(_) => Response::ok(format!("Rule '{}' created", name)),
-                    Err(e) => Response::err(format!("Create failed: {}", e)),
+            "disable" => {
+                if let Some(rule_name) = cmd.params.first() {
+                    match firewall.disable_rule(rule_name) {
+                        Ok(_) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' disabled successfully", rule_name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Err(e) => ResponsePayload {
+                            success: false,
+                            message: format!("Failed to disable rule: {}", e),
+                            data: None,
+                            timestamp: ts,
+                        },
+                    }
+                } else {
+                    ResponsePayload {
+                        success: false,
+                        message: "Missing rule name parameter".to_string(),
+                        data: None,
+                        timestamp: ts,
+                    }
                 }
             }
-            Request::Delete { name } => match self.fw.delete_rule(&name).await {
-                Ok(_) => Response::ok(format!("Rule '{}' deleted", name)),
-                Err(e) => Response::err(format!("Delete failed: {}", e)),
+            "create" => {
+                if cmd.params.len() >= 5 {
+                    let name = &cmd.params[0];
+                    let src = &cmd.params[1];
+                    let dest = &cmd.params[2];
+                    let proto = &cmd.params[3];
+                    let port: u16 = match cmd.params[4].parse() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            return ResponsePayload {
+                                success: false,
+                                message: "Invalid port parameter".to_string(),
+                                data: None,
+                                timestamp: ts,
+                            }
+                        }
+                    };
+
+                    match firewall.create_rule(name, src, dest, proto, port) {
+                        Ok(_) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' created successfully", name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Err(e) => ResponsePayload {
+                            success: false,
+                            message: format!("Failed to create rule: {}", e),
+                            data: None,
+                            timestamp: ts,
+                        },
+                    }
+                } else {
+                    ResponsePayload {
+                        success: false,
+                        message: "Usage: create <name> <src> <dest> <proto> <port>".to_string(),
+                        data: None,
+                        timestamp: ts,
+                    }
+                }
+            }
+            "delete" => {
+                if let Some(rule_name) = cmd.params.first() {
+                    match firewall.delete_rule(rule_name) {
+                        Ok(_) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' deleted successfully", rule_name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Err(e) => ResponsePayload {
+                            success: false,
+                            message: format!("Failed to delete rule: {}", e),
+                            data: None,
+                            timestamp: ts,
+                        },
+                    }
+                } else {
+                    ResponsePayload {
+                        success: false,
+                        message: "Missing rule name parameter".to_string(),
+                        data: None,
+                        timestamp: ts,
+                    }
+                }
+            }
+            "status" => match firewall.get_status() {
+                Ok(st) => ResponsePayload {
+                    success: true,
+                    message: "Status retrieved successfully".to_string(),
+                    data: serde_json::to_value(st).ok(),
+                    timestamp: ts,
+                },
+                Err(e) => ResponsePayload {
+                    success: false,
+                    message: format!("Failed to get status: {}", e),
+                    data: None,
+                    timestamp: ts,
+                },
             },
-            Request::Status => match self.fw.status().await {
-                Ok(data) => Response::ok_with_data("Status OK", data),
-                Err(e) => Response::err(format!("Status failed: {}", e)),
+            unknown => ResponsePayload {
+                success: false,
+                message: format!("Unknown action: {}", unknown),
+                data: None,
+                timestamp: ts,
             },
         }
     }
 
-    /// Cheap clone of Arc references only
-    fn clone_refs(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            crypto: self.crypto.clone(),
-            fw: self.fw.clone(),
-            limiter: self.limiter.clone(),
+    fn send_response(
+        &self,
+        socket: &UdpSocket,
+        target: &SocketAddr,
+        crypto: &CryptoManager,
+        resp: &ResponsePayload,
+    ) {
+        if let Ok(json_bytes) = serde_json::to_vec(resp) {
+            if let Ok(encrypted_payload) = crypto.encrypt(&json_bytes) {
+                let _ = socket.send_to(encrypted_payload.as_bytes(), target);
+            }
         }
     }
 }

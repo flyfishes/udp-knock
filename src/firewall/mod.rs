@@ -1,29 +1,70 @@
-use async_trait::async_trait;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
-
-#[cfg(feature = "openwrt")]
-pub mod openwrt;
-
-#[async_trait]
-pub trait FirewallManager: Send + Sync {
-    async fn list_rules(&self) -> Result<Value, AppError>;
-    async fn enable_rule(&self, name: &str) -> Result<(), AppError>;
-    async fn disable_rule(&self, name: &str) -> Result<(), AppError>;
-    async fn create_rule(&self, name: &str, src: &str, dest: &str, proto: &str, port: &str) -> Result<(), AppError>;
-    async fn delete_rule(&self, name: &str) -> Result<(), AppError>;
-    async fn status(&self) -> Result<Value, AppError>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallRule {
+    pub name: String,
+    pub src: String,
+    pub dest: String,
+    pub proto: String,
+    pub port: u16,
+    pub enabled: bool,
 }
 
-pub fn create_firewall_manager(platform: &str) -> Result<Box<dyn FirewallManager>, AppError> {
-    match platform {
-        #[cfg(feature = "openwrt")]
-        "openwrt" => Ok(Box::new(openwrt::OpenWrtFirewall::new())),
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirewallStatus {
+    pub active: bool,
+    pub platform: String,
+    pub total_rules: usize,
+    pub active_rules: usize,
+}
 
-        #[cfg(not(feature = "openwrt"))]
-        "openwrt" => Err(AppError::Firewall("OpenWrt support not compiled in".into())),
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirewallError {
+    RuleNotFound(String),
+    CommandFailed(String),
+    NotImplemented(String),
+    InvalidParameter(String),
+}
 
-        _ => Err(AppError::Firewall(format!("Unsupported platform: {}", platform))),
+impl std::fmt::Display for FirewallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FirewallError::RuleNotFound(s) => write!(f, "Rule not found: {}", s),
+            FirewallError::CommandFailed(s) => write!(f, "Firewall command failed: {}", s),
+            FirewallError::NotImplemented(s) => write!(f, "Feature not implemented: {}", s),
+            FirewallError::InvalidParameter(s) => write!(f, "Invalid parameter: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for FirewallError {}
+
+pub trait FirewallManager: Send + Sync {
+    fn list_rules(&self) -> Result<Vec<FirewallRule>, FirewallError>;
+    fn enable_rule(&self, name: &str) -> Result<(), FirewallError>;
+    fn disable_rule(&self, name: &str) -> Result<(), FirewallError>;
+    fn create_rule(
+        &self,
+        name: &str,
+        src: &str,
+        dest: &str,
+        proto: &str,
+        port: u16,
+    ) -> Result<(), FirewallError>;
+    fn delete_rule(&self, name: &str) -> Result<(), FirewallError>;
+    fn get_status(&self) -> Result<FirewallStatus, FirewallError>;
+}
+
+pub mod linux;
+pub mod openwrt;
+pub mod windows;
+
+pub fn get_firewall_manager(platform: &str) -> Box<dyn FirewallManager> {
+    match platform.to_lowercase().as_str() {
+        "openwrt" => Box::new(openwrt::OpenWrtFirewall::new()),
+        "linux" => Box::new(linux::LinuxFirewall::new()),
+        "windows" => Box::new(windows::WindowsFirewall::new()),
+        _ => Box::new(openwrt::OpenWrtFirewall::new()),
     }
 }

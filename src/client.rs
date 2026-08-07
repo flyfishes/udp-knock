@@ -1,46 +1,73 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use tokio::net::UdpSocket;
-use tokio::time::timeout;
-
-use crate::config::Config;
-use crate::crypto::CryptoContext;
-use crate::error::AppError;
-use crate::protocol::{Request, Response};
+use crate::config::ClientConfig;
+use crate::crypto::CryptoManager;
+use crate::server::{CommandPayload, ResponsePayload};
+use std::net::UdpSocket;
+use std::time::Duration;
 
 pub struct Client {
-    config: Config,
-    crypto: CryptoContext,
+    config: ClientConfig,
+    debug: bool,
 }
 
 impl Client {
-    pub fn new(config: Config) -> Self {
-        let crypto = CryptoContext::new(&config.shared_secret);
-        Self { config, crypto }
+    pub fn new(config: ClientConfig, debug: bool) -> Self {
+        Self { config, debug }
     }
 
-    pub async fn send(&self, request: Request) -> Result<Response, AppError> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        socket.connect(&self.config.listen_addr).await?;
+    pub fn send_command(
+        &self,
+        action: &str,
+        params: &[String],
+        override_timeout: Option<u64>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let crypto = CryptoManager::new(&self.config.shared_key);
+        let payload = CommandPayload {
+            action: action.to_string(),
+            params: params.to_vec(),
+            timestamp: CryptoManager::current_timestamp(),
+        };
 
-        let json = serde_json::to_vec(&request)?;
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let packet = self.crypto.seal(&json, ts)?;
+        let json_bytes = serde_json::to_vec(&payload)?;
+        let encrypted_payload = crypto.encrypt(&json_bytes)?;
 
-        socket.send(&packet).await?;
+        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        let timeout_secs = override_timeout.unwrap_or(self.config.timeout);
+        socket.set_read_timeout(Some(Duration::from_secs(timeout_secs)))?;
 
-        // Receive with timeout
+        if self.debug {
+            println!(
+                "[DEBUG] Sending command '{}' to {}",
+                action, self.config.server_addr
+            );
+        }
+
+        socket.send_to(encrypted_payload.as_bytes(), &self.config.server_addr)?;
+
         let mut buf = [0u8; 4096];
-        let dur = Duration::from_secs(self.config.timeout_secs);
-        let len = timeout(dur, socket.recv(&mut buf))
-            .await
-            .map_err(|_| AppError::Timeout)??;
+        let (amt, _) = socket.recv_from(&mut buf).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                format!("Request timed out after {} seconds (Server may be unreachable or credentials mismatch)", timeout_secs)
+            } else {
+                format!("Failed to receive response: {}", e)
+            }
+        })?;
 
-        let (plaintext, _resp_ts) = self.crypto.open(&buf[..len])?;
-        let response: Response = serde_json::from_slice(&plaintext)?;
-        Ok(response)
+        let resp_raw = std::str::from_utf8(&buf[..amt])?.trim();
+        let decrypted_bytes = crypto
+            .decrypt(resp_raw)
+            .map_err(|e| format!("Failed to decrypt server response: {}", e))?;
+
+        let resp: ResponsePayload = serde_json::from_slice(&decrypted_bytes)?;
+
+        if resp.success {
+            println!("✅ Success: {}", resp.message);
+            if let Some(data) = resp.data {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            }
+        } else {
+            eprintln!("❌ Error: {}", resp.message);
+        }
+
+        Ok(())
     }
 }

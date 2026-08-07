@@ -1,114 +1,151 @@
-mod cli;
+use clap::{Parser, Subcommand};
+use std::process;
+
 mod client;
 mod config;
 mod crypto;
-mod error;
 mod firewall;
-mod protocol;
 mod server;
 
-use clap::Parser;
-use tracing_subscriber::EnvFilter;
-
-use cli::{Cli, Commands};
 use client::Client;
 use config::Config;
-use protocol::Request;
+use firewall::get_firewall_manager;
 use server::Server;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+#[derive(Parser, Debug)]
+#[command(
+    name = "udp-knock",
+    author = "UDP Knock Authors",
+    version = "0.1.0",
+    about = "Secure remote firewall management tool using encrypted UDP packets"
+)]
+struct Cli {
+    /// Path to configuration file
+    #[arg(short = 'c', long = "config", default_value = "config.json")]
+    config: String,
+
+    /// Enable debug output
+    #[arg(short = 'd', long = "debug")]
+    debug: bool,
+
+    /// Target platform (openwrt, linux, windows)
+    #[arg(short = 'p', long = "platform")]
+    platform: Option<String>,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Start the UDP Knock server
+    Server,
+
+    /// Send a command to the remote UDP Knock server
+    Client {
+        /// Action name (list, enable, disable, create, delete, status)
+        #[arg(short = 'a', long = "action")]
+        action: Option<String>,
+
+        /// Command parameters list
+        #[arg(short = 'p', long = "params", num_args = 0..)]
+        params: Vec<String>,
+
+        /// Command timeout in seconds
+        #[arg(short = 't', long = "timeout")]
+        timeout: Option<u64>,
+    },
+
+    /// Initialize default configuration file
+    Init {
+        /// Platform to pre-configure
+        #[arg(short = 'p', long = "platform")]
+        platform: Option<String>,
+    },
+
+    /// Display current local firewall status directly
+    Status,
+}
+
+fn main() {
     let cli = Cli::parse();
 
-    // Setup logging
-    let filter = if cli.debug {
-        EnvFilter::new("debug")
+    // Initialize logger based on debug flag
+    let log_level = if cli.debug {
+        log::LevelFilter::Debug
     } else {
-        EnvFilter::new("warn")
+        log::LevelFilter::Info
     };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    env_logger::Builder::new().filter_level(log_level).init();
 
     match cli.command {
         Commands::Init { platform } => {
-            let content = Config::generate_default(&platform);
-            std::fs::write(&cli.config, &content)?;
-            println!("Generated config at: {}", cli.config);
+            let plat = platform.or(cli.platform);
+            match Config::init_config(&cli.config, plat.as_deref()) {
+                Ok(_) => {
+                    println!("Initialized configuration file at '{}'", cli.config);
+                }
+                Err(e) => {
+                    eprintln!("Failed to initialize config file: {}", e);
+                    process::exit(1);
+                }
+            }
         }
-
         Commands::Server => {
-            let config = Config::load(&cli.config)?;
-            let srv = Server::new(config)?;
-            srv.run().await?;
-        }
+            let mut cfg = Config::load_or_default(&cli.config).unwrap_or_else(|e| {
+                eprintln!("Failed to load config: {}", e);
+                process::exit(1);
+            });
 
-        Commands::Client { action, params, timeout } => {
-            let mut config = Config::load(&cli.config)?;
-            if let Some(t) = timeout {
-                config.timeout_secs = t;
+            if let Some(p) = cli.platform {
+                cfg.platform = p;
+            }
+            if cli.debug {
+                cfg.debug = true;
             }
 
-            let request = build_request(&action, &params)?;
-            let client = Client::new(config);
-            let response = client.send(request).await?;
-
-            if response.success {
-                println!("✅ {}", response.message);
-                if let Some(data) = response.data {
-                    println!("{}", serde_json::to_string_pretty(&data)?);
-                }
-            } else {
-                eprintln!("❌ {}", response.message);
-                std::process::exit(1);
+            let srv = Server::new(cfg.server, cfg.platform, cfg.debug);
+            if let Err(e) = srv.run() {
+                eprintln!("Server error: {}", e);
+                process::exit(1);
             }
         }
+        Commands::Client {
+            action,
+            params,
+            timeout,
+        } => {
+            let cfg = Config::load_or_default(&cli.config).unwrap_or_else(|e| {
+                eprintln!("Failed to load config: {}", e);
+                process::exit(1);
+            });
 
+            let act = action.unwrap_or_else(|| "status".to_string());
+            let client = Client::new(cfg.client, cli.debug);
+
+            if let Err(e) = client.send_command(&act, &params, timeout) {
+                eprintln!("Client command failed: {}", e);
+                process::exit(1);
+            }
+        }
         Commands::Status => {
-            let config = Config::load(&cli.config)?;
-            let client = Client::new(config);
-            let response = client.send(Request::Status).await?;
-            if response.success {
-                println!("✅ {}", response.message);
-                if let Some(data) = response.data {
-                    println!("{}", serde_json::to_string_pretty(&data)?);
+            let cfg = Config::load_or_default(&cli.config).unwrap_or_default();
+            let plat = cli.platform.unwrap_or(cfg.platform);
+            let firewall = get_firewall_manager(&plat);
+
+            match firewall.get_status() {
+                Ok(st) => {
+                    println!("Firewall Status:");
+                    println!("  Platform: {}", st.platform);
+                    println!("  Active: {}", st.active);
+                    println!("  Total Rules: {}", st.total_rules);
+                    println!("  Active Rules: {}", st.active_rules);
                 }
-            } else {
-                eprintln!("❌ {}", response.message);
-                std::process::exit(1);
+                Err(e) => {
+                    eprintln!("Failed to get firewall status: {}", e);
+                    process::exit(1);
+                }
             }
         }
-    }
-
-    Ok(())
-}
-
-fn build_request(action: &str, params: &[String]) -> anyhow::Result<Request> {
-    match action {
-        "list" => Ok(Request::List),
-        "status" => Ok(Request::Status),
-        "enable" => {
-            let name = params.first().ok_or_else(|| anyhow::anyhow!("enable requires <name>"))?;
-            Ok(Request::Enable { name: name.clone() })
-        }
-        "disable" => {
-            let name = params.first().ok_or_else(|| anyhow::anyhow!("disable requires <name>"))?;
-            Ok(Request::Disable { name: name.clone() })
-        }
-        "delete" => {
-            let name = params.first().ok_or_else(|| anyhow::anyhow!("delete requires <name>"))?;
-            Ok(Request::Delete { name: name.clone() })
-        }
-        "create" => {
-            if params.len() < 5 {
-                anyhow::bail!("create requires <name> <src> <dest> <proto> <port>");
-            }
-            Ok(Request::Create {
-                name: params[0].clone(),
-                src: params[1].clone(),
-                dest: params[2].clone(),
-                proto: params[3].clone(),
-                port: params[4].clone(),
-            })
-        }
-        _ => anyhow::bail!("Unknown action: {}. Use: list|enable|disable|create|delete|status", action),
     }
 }

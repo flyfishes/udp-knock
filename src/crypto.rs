@@ -2,104 +2,196 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
-use sha2::Sha256;
-
-use crate::error::AppError;
+use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
 
 const NONCE_LEN: usize = 12;
 const HMAC_LEN: usize = 32;
-const TIMESTAMP_LEN: usize = 8;
+const REPLAY_WINDOW_SECS: u64 = 30;
 
-/// Header size before ciphertext: HMAC(32) + Timestamp(8)
-pub const HEADER_LEN: usize = HMAC_LEN + TIMESTAMP_LEN;
-
-pub struct CryptoContext {
-    enc_key: [u8; 32],
-    mac_key: [u8; 32],
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum CryptoError {
+    Base64DecodeError,
+    PacketTooShort,
+    HmacMismatch,
+    DecryptionFailed,
+    TimestampExpired,
+    InvalidTimestamp,
 }
 
-impl CryptoContext {
-    pub fn new(shared_secret: &str) -> Self {
-        let enc_key = derive_key(shared_secret, b"encryption");
-        let mac_key = derive_key(shared_secret, b"authentication");
-        Self { enc_key, mac_key }
+impl std::fmt::Display for CryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CryptoError::Base64DecodeError => write!(f, "Base64 decode error"),
+            CryptoError::PacketTooShort => write!(f, "Packet payload too short"),
+            CryptoError::HmacMismatch => write!(f, "HMAC verification failed"),
+            CryptoError::DecryptionFailed => write!(f, "Decryption failed"),
+            CryptoError::TimestampExpired => write!(f, "Timestamp window expired"),
+            CryptoError::InvalidTimestamp => write!(f, "Invalid timestamp format"),
+        }
+    }
+}
+
+impl std::error::Error for CryptoError {}
+
+pub struct CryptoManager {
+    aes_key: [u8; 32],
+    hmac_key: [u8; 32],
+}
+
+impl CryptoManager {
+    pub fn new(shared_key: &str) -> Self {
+        // Derive AES key
+        let mut hasher_aes = Sha256::new();
+        hasher_aes.update(shared_key.as_bytes());
+        hasher_aes.update(b":aes-key");
+        let aes_key: [u8; 32] = hasher_aes.finalize().into();
+
+        // Derive HMAC key
+        let mut hasher_hmac = Sha256::new();
+        hasher_hmac.update(shared_key.as_bytes());
+        hasher_hmac.update(b":hmac-key");
+        let hmac_key: [u8; 32] = hasher_hmac.finalize().into();
+
+        Self { aes_key, hmac_key }
     }
 
-    /// Encrypt + sign: returns [HMAC(32) || Timestamp(8) || Nonce(12) || Ciphertext+Tag]
-    pub fn seal(&self, plaintext: &[u8], timestamp: u64) -> Result<Vec<u8>, AppError> {
-        // Generate random nonce
+    /// Encrypt plaintext into Base64 encoded payload: [Nonce(12B) | HMAC(32B) | Ciphertext]
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<String, CryptoError> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-
-        // AES-256-GCM encrypt
-        let cipher = Aes256Gcm::new_from_slice(&self.enc_key)
-            .map_err(|e| AppError::Crypto(e.to_string()))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = cipher.encrypt(nonce, plaintext)?;
 
-        // Build payload: timestamp || nonce || ciphertext
-        let ts_bytes = timestamp.to_be_bytes();
-        let mut signed_data = Vec::with_capacity(TIMESTAMP_LEN + NONCE_LEN + ciphertext.len());
-        signed_data.extend_from_slice(&ts_bytes);
-        signed_data.extend_from_slice(&nonce_bytes);
-        signed_data.extend_from_slice(&ciphertext);
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.aes_key).map_err(|_| CryptoError::DecryptionFailed)?;
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|_| CryptoError::DecryptionFailed)?;
 
-        // HMAC over (timestamp || nonce || ciphertext)
-        let mut mac = HmacSha256::new_from_slice(&self.mac_key)
-            .map_err(|e| AppError::Crypto(e.to_string()))?;
-        mac.update(&signed_data);
-        let hmac_tag = mac.finalize().into_bytes();
+        // Compute HMAC over nonce + ciphertext
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.hmac_key)
+            .map_err(|_| CryptoError::HmacMismatch)?;
+        mac.update(&nonce_bytes);
+        mac.update(&ciphertext);
+        let hmac_result = mac.finalize().into_bytes();
 
-        // Final packet: HMAC || timestamp || nonce || ciphertext
-        let mut packet = Vec::with_capacity(HMAC_LEN + signed_data.len());
-        packet.extend_from_slice(&hmac_tag);
-        packet.extend_from_slice(&signed_data);
+        let mut buffer = Vec::with_capacity(NONCE_LEN + HMAC_LEN + ciphertext.len());
+        buffer.extend_from_slice(&nonce_bytes);
+        buffer.extend_from_slice(&hmac_result);
+        buffer.extend_from_slice(&ciphertext);
 
-        Ok(packet)
+        Ok(BASE64.encode(buffer))
     }
 
-    /// Verify + decrypt. Returns (plaintext, timestamp) or error.
-    pub fn open(&self, packet: &[u8]) -> Result<(Vec<u8>, u64), AppError> {
-        if packet.len() < HEADER_LEN + NONCE_LEN + 16 {
-            return Err(AppError::Crypto("Packet too short".into()));
+    /// Decrypt Base64 encoded payload back into plaintext after verifying HMAC
+    pub fn decrypt(&self, base64_payload: &str) -> Result<Vec<u8>, CryptoError> {
+        let raw_bytes = BASE64
+            .decode(base64_payload.trim())
+            .map_err(|_| CryptoError::Base64DecodeError)?;
+
+        if raw_bytes.len() < NONCE_LEN + HMAC_LEN {
+            return Err(CryptoError::PacketTooShort);
         }
 
-        let (hmac_received, rest) = packet.split_at(HMAC_LEN);
-        let (ts_bytes, body) = rest.split_at(TIMESTAMP_LEN);
+        let nonce_bytes = &raw_bytes[..NONCE_LEN];
+        let hmac_bytes = &raw_bytes[NONCE_LEN..NONCE_LEN + HMAC_LEN];
+        let ciphertext = &raw_bytes[NONCE_LEN + HMAC_LEN..];
 
-        // Verify HMAC first (constant-time via hmac crate)
-        let mut mac = HmacSha256::new_from_slice(&self.mac_key)
-            .map_err(|e| AppError::Crypto(e.to_string()))?;
-        mac.update(rest); // rest = timestamp || nonce || ciphertext
-        mac.verify_slice(hmac_received)
-            .map_err(|_| AppError::Crypto("HMAC verification failed".into()))?;
+        // Verify HMAC
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(&self.hmac_key)
+            .map_err(|_| CryptoError::HmacMismatch)?;
+        mac.update(nonce_bytes);
+        mac.update(ciphertext);
 
-        // Extract timestamp
-        let timestamp = u64::from_be_bytes(
-            ts_bytes.try_into().map_err(|_| AppError::Crypto("Bad timestamp".into()))?,
-        );
+        mac.verify_slice(hmac_bytes)
+            .map_err(|_| CryptoError::HmacMismatch)?;
 
-        // Decrypt
-        let (nonce_bytes, ciphertext) = body.split_at(NONCE_LEN);
-        let cipher = Aes256Gcm::new_from_slice(&self.enc_key)
-            .map_err(|e| AppError::Crypto(e.to_string()))?;
+        // Decrypt ciphertext
         let nonce = Nonce::from_slice(nonce_bytes);
+        let cipher =
+            Aes256Gcm::new_from_slice(&self.aes_key).map_err(|_| CryptoError::DecryptionFailed)?;
+
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
-            .map_err(|_| AppError::Crypto("AES-GCM decryption failed".into()))?;
+            .map_err(|_| CryptoError::DecryptionFailed)?;
 
-        Ok((plaintext, timestamp))
+        Ok(plaintext)
+    }
+
+    /// Get current unix timestamp in seconds
+    pub fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// Verify that timestamp is within acceptable window
+    pub fn verify_timestamp(ts: u64, max_window_secs: Option<u64>) -> Result<(), CryptoError> {
+        let current = Self::current_timestamp();
+        let window = max_window_secs.unwrap_or(REPLAY_WINDOW_SECS);
+        let diff = current.abs_diff(ts);
+
+        if diff > window {
+            Err(CryptoError::TimestampExpired)
+        } else {
+            Ok(())
+        }
     }
 }
 
-fn derive_key(secret: &str, label: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    let mut hasher = Sha256::new();
-    hasher.update(secret.as_bytes());
-    hasher.update(label);
-    hasher.finalize().into()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_success() {
+        let crypto = CryptoManager::new("secret_key_123");
+        let payload = b"Hello UDP Knock";
+
+        let encrypted = crypto.encrypt(payload).expect("Encryption failed");
+        let decrypted = crypto.decrypt(&encrypted).expect("Decryption failed");
+
+        assert_eq!(payload.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_tampered_ciphertext_fails() {
+        let crypto = CryptoManager::new("secret_key_123");
+        let payload = b"Sensitive Command";
+
+        let encrypted = crypto.encrypt(payload).expect("Encryption failed");
+        let mut raw = BASE64.decode(&encrypted).unwrap();
+        // Tamper with the ciphertext byte
+        let last_idx = raw.len() - 1;
+        raw[last_idx] ^= 0xFF;
+        let tampered = BASE64.encode(raw);
+
+        assert_eq!(crypto.decrypt(&tampered), Err(CryptoError::HmacMismatch));
+    }
+
+    #[test]
+    fn test_wrong_key_fails() {
+        let crypto1 = CryptoManager::new("secret_key_123");
+        let crypto2 = CryptoManager::new("wrong_key_456");
+
+        let encrypted = crypto1.encrypt(b"Secret").unwrap();
+        assert!(crypto2.decrypt(&encrypted).is_err());
+    }
+
+    #[test]
+    fn test_timestamp_verification() {
+        let now = CryptoManager::current_timestamp();
+        assert!(CryptoManager::verify_timestamp(now, None).is_ok());
+        assert!(CryptoManager::verify_timestamp(now - 10, None).is_ok());
+        assert!(CryptoManager::verify_timestamp(now - 31, None).is_err());
+        assert!(CryptoManager::verify_timestamp(now + 31, None).is_err());
+    }
 }

@@ -11,6 +11,11 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force release build'
+        required: false
+        default: 'false'
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,7 +23,7 @@ env:
 
 jobs:
   # ============================================================
-  # Job 1: 代码检查与测试
+  # Job 1: 代码检查与单元测试
   # ============================================================
   check-and-test:
     name: Check & Test
@@ -50,7 +55,6 @@ jobs:
   build:
     name: Build ${{ matrix.artifact }}
     needs: check-and-test
-    # 仅在 tag 推送或手动强制发布时构建
     if: |
       startsWith(github.ref, 'refs/tags/v') || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.force_release == 'true')
@@ -111,7 +115,7 @@ jobs:
           cargo build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
           echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock${EXT}" >> $GITHUB_ENV
 
-      # Cross build
+      # Cross build for Musl targets
       - name: Install cross
         if: ${{ matrix.cross }}
         run: cargo install cross --git https://github.com/cross-rs/cross --locked
@@ -122,7 +126,7 @@ jobs:
           cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
           echo "BUILD_OUTPUT=target/${{ matrix.target }}/release/udp-knock" >> $GITHUB_ENV
 
-      # UPX compression
+      # UPX binary compression
       - name: Compress with UPX
         if: ${{ matrix.upx }}
         uses: crazy-max/ghaction-upx@v3
@@ -135,7 +139,7 @@ jobs:
           upx --best --lzma "${{ env.BUILD_OUTPUT }}" || echo "UPX failed, keeping original"
           ls -lh "${{ env.BUILD_OUTPUT }}"
 
-      # Package
+      # Package artifact & SHA256 checksum
       - name: Package artifact
         shell: bash
         run: |
@@ -153,7 +157,7 @@ jobs:
           retention-days: 30
 
   # ============================================================
-  # Job 3: 创建 Release
+  # Job 3: 创建 GitHub Release
   # ============================================================
   release:
     name: Create Release

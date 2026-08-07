@@ -1,9 +1,0 @@
-{
-  "listen_addr": "0.0.0.0:9999",
-  "shared_secret": "CHANGE_ME_TO_A_SECURE_RANDOM_STRING",
-  "allowed_ips": [],
-  "rate_limit_rpm": 60,
-  "timeout_secs": 5,
-  "time_window_secs": 30,
-  "platform": "openwrt"
-}
