@@ -357,7 +357,8 @@ impl Server {
                 } else {
                     ResponsePayload {
                         success: false,
-                        message: "Usage: create <name> <src> <dest> <proto> <port> [in|out]".to_string(),
+                        message: "Usage: create <name> <src> <dest> <proto> <port> [in|out]"
+                            .to_string(),
                         data: None,
                         timestamp: ts,
                     }
