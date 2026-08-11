@@ -2,6 +2,20 @@ use super::{FirewallError, FirewallManager, FirewallRule, FirewallStatus};
 use std::process::Command;
 use std::sync::Mutex;
 
+/// 内部结构：保存 netsh show rule 的完整解析结果（含 action/remoteport/description）
+#[derive(Debug, Clone, Default)]
+struct RuleFullInfo {
+    name: String,
+    enabled: bool,
+    action: String,          // allow / block
+    protocol: String,        // any / tcp / udp / icmp ...
+    local_ip: String,        // LocalIP
+    remote_ip: String,       // RemoteIP（原始字符串，可能含 /32）
+    local_port: Option<u16>,
+    remote_port: Option<u16>,
+    description: String,
+}
+
 pub struct WindowsFirewall {
     fallback_rules: Mutex<Vec<FirewallRule>>,
 }
@@ -82,6 +96,7 @@ impl WindowsFirewall {
             };
 
             let key_lower = key.to_lowercase();
+			log::debug!("rule key:{}", key_lower);
             if key_lower.contains("remoteip")
                 || key_lower.contains("远程 ip")
                 || key_lower.contains("远程ip")
@@ -158,6 +173,110 @@ impl WindowsFirewall {
 
         Ok(rule)
     }
+	
+	/// 获取规则的完整参数（包括 remoteip），用于 update_rule 回填 None 参数
+	fn get_rule_full_info(&self, name: &str, direction: &str) -> Result<RuleFullInfo, FirewallError> {
+		let output = self.run_netsh(&[
+			"advfirewall", "firewall", "show", "rule",
+			&format!("name={}", name),
+			&format!("dir={}", direction),
+		])?;
+
+		let mut info = RuleFullInfo {
+			name: name.to_string(),
+			enabled: false,
+			action: "allow".to_string(),
+			protocol: "any".to_string(),
+			local_ip: String::new(),
+			remote_ip: String::new(),
+			local_port: None,
+			remote_port: None,
+			description: String::new(),
+		};
+
+		for line in output.lines() {
+			let line = line.trim();
+			if line.is_empty() { continue; }
+			let (key, val) = if let Some((k, v)) = line.split_once(':') {
+				(k.trim(), v.trim())
+			} else if let Some((k, v)) = line.split_once('：') {
+				(k.trim(), v.trim())
+			} else {
+				continue;
+			};
+			let key_lower = key.to_lowercase();
+			let val_lower = val.to_lowercase();
+
+			if key_lower.contains("enabled") || key_lower.contains("已启用") {
+				info.enabled = val_lower == "yes" || val == "是" || val_lower == "true" || val_lower == "1";
+			} else if key_lower.contains("action") || key_lower.contains("操作") || key_lower.contains("动作") {
+				info.action = if val_lower.contains("block") || val.contains("阻止") || val.contains("拒绝") {
+					"block".to_string()
+				} else {
+					"allow".to_string()
+				};
+			} else if key_lower.contains("protocol") || key_lower.contains("协议") {
+				info.protocol = if val_lower == "any" || val == "任何" || val_lower.is_empty() {
+					"any".to_string()
+				} else {
+					val_lower
+				};
+			} else if key_lower.contains("localport") || key_lower.contains("本地端口") {
+				info.local_port = val.parse::<u16>().ok();
+			} else if key_lower.contains("remoteport") || key_lower.contains("远程端口") {
+				info.remote_port = val.parse::<u16>().ok();
+			} else if key_lower.contains("remoteip") || key_lower.contains("远程 ip") || key_lower.contains("远程ip") {
+				info.remote_ip = val.to_string();
+			} else if key_lower.contains("localip") || key_lower.contains("本地 ip") || key_lower.contains("本地ip") {
+				info.local_ip = val.to_string();
+			} else if key_lower.contains("description") || key_lower.contains("描述") {
+				info.description = val.to_string();
+			}
+		}
+		Ok(info)
+	}
+
+	/// 把 "1.2.3.4/32" 归一化为 "1.2.3.4"；网段（如 /24）原样保留
+	fn normalize_single_ip(&self, ip: &str) -> String {
+		let ip = ip.trim();
+		ip.strip_suffix("/32").map(|s| s.to_string()).unwrap_or_else(|| ip.to_string())
+	}
+
+	/// 判断当前 IP（可能带 /32 或为网段）是否匹配 old_ip_pattern
+	/// 支持：精确 / CIDR / 通配符 / 范围 / 前缀
+	fn ip_matches_pattern(&self, current_ip: &str, pattern: &str) -> bool {
+		let pattern = pattern.trim();
+		if pattern.is_empty() {
+			return false;
+		}
+		// 去掉掩码，取裸 IP 用于匹配（192.168.1.133/32 -> 192.168.1.133）
+		let bare = current_ip.split('/').next().unwrap_or(current_ip).trim();
+
+		// 精确匹配
+		if pattern == current_ip || pattern == bare {
+			return true;
+		}
+		// CIDR：192.168.1.0/24 能匹配 192.168.1.133/32
+		if pattern.contains('/') {
+			return self.cidr_match(pattern, bare);
+		}
+		// 通配符
+		if pattern.contains('*') {
+			return self.wildcard_match(pattern, bare);
+		}
+		// IP 范围
+		if pattern.contains('-') {
+			return self.range_match(pattern, bare);
+		}
+		// 兜底：前缀匹配（兼容 "192.168.1." 这类写法）
+		bare.starts_with(pattern)
+	}
+
+	/// 判断某个值是否表示 "any"
+	fn is_any_value(&self, s: &str) -> bool {
+		let s = s.trim().to_lowercase();
+		s.is_empty() || s == "any" || s == "*" || s == "任何"
+	}
 
     fn parse_rules_from_netsh(&self, output: &str) -> Vec<FirewallRule> {
         let mut rules = Vec::new();
@@ -588,77 +707,69 @@ impl WindowsFirewall {
     /// 创建带完整参数的规则（内部辅助函数）
     #[allow(clippy::too_many_arguments)]
     fn create_rule_with_params(
-        &self,
-        name: &str,
-        direction: &str,
-        remote_ip: &str,
-        action: &str,
-        protocol: &str,
-        local_port: Option<u16>,
-        remote_port: Option<u16>,
-        local_addr: Option<&str>,
-        description: Option<&str>,
-        enabled: Option<bool>,
-    ) -> Result<(), FirewallError> {
-        let mut args = vec![
-            "advfirewall".to_string(),
-            "firewall".to_string(),
-            "add".to_string(),
-            "rule".to_string(),
-            format!("name={}", name),
-            format!("dir={}", direction),
-            format!("action={}", action),
-            format!("protocol={}", protocol),
-        ];
+		&self,
+		name: &str,
+		direction: &str,
+		remote_ip: &str,
+		action: &str,
+		protocol: &str,
+		local_port: Option<u16>,
+		remote_port: Option<u16>,
+		local_addr: Option<&str>,
+		description: Option<&str>,
+		enabled: Option<bool>,
+	) -> Result<(), FirewallError> {
+		let mut args: Vec<String> = vec![
+			"advfirewall".to_string(),
+			"firewall".to_string(),
+			"add".to_string(),
+			"rule".to_string(),
+			format!("name={}", name),
+			format!("dir={}", direction),
+			format!("action={}", action),
+			format!("protocol={}", protocol),
+		];
+		if remote_ip != "any" && !remote_ip.is_empty() {
+			args.push(format!("remoteip={}", remote_ip));
+		}
+		if let Some(port) = local_port {
+			args.push(format!("localport={}", port));
+		}
+		if let Some(port) = remote_port {
+			args.push(format!("remoteport={}", port));
+		}
+		if let Some(addr) = local_addr {
+			if !addr.is_empty() {
+				args.push(format!("localaddr={}", addr));
+			}
+		}
+		if let Some(desc) = description {
+			if !desc.is_empty() {
+				args.push(format!("description={}", desc));
+			}
+		}
+		if let Some(en) = enabled {
+			args.push(format!("enable={}", if en { "yes" } else { "no" }));
+		}
 
-        if remote_ip != "any" && !remote_ip.is_empty() {
-            args.push(format!("remoteip={}", remote_ip));
-        }
-
-        if let Some(port) = local_port {
-            args.push(format!("localport={}", port));
-        }
-
-        if let Some(port) = remote_port {
-            args.push(format!("remoteport={}", port));
-        }
-
-        if let Some(addr) = local_addr {
-            if !addr.is_empty() {
-                args.push(format!("localaddr={}", addr));
-            }
-        }
-
-        if let Some(desc) = description {
-            if !desc.is_empty() {
-                args.push(format!("description={}", desc));
-            }
-        }
-
-        if let Some(enabled) = enabled {
-            args.push(format!("enabled={}", if enabled { "yes" } else { "no" }));
-        }
-
-        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-        match self.run_netsh(&args_ref) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // 如果命令失败，保存到备用规则
-                let mut fallback = self.fallback_rules.lock().unwrap();
-                fallback.retain(|r| r.name != name);
-                fallback.push(FirewallRule {
-                    name: name.to_string(),
-                    src: remote_ip.to_string(),
-                    dest: local_addr.unwrap_or("any").to_string(),
-                    proto: protocol.to_string(),
-                    port: local_port.unwrap_or(0),
-                    enabled: enabled.unwrap_or(true),
-                });
-                Err(e)
-            }
-        }
-    }
+		let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+		match self.run_netsh(&args_ref) {
+			Ok(_) => Ok(()),
+			Err(e) => {
+				let mut fallback = self.fallback_rules.lock().unwrap();
+				fallback.retain(|r| r.name != name);
+				fallback.push(FirewallRule {
+					name: name.to_string(),
+					src: remote_ip.to_string(),
+					dest: local_addr.unwrap_or("any").to_string(),
+					proto: protocol.to_string(),
+					port: local_port.unwrap_or(0),
+					enabled: enabled.unwrap_or(true),
+				});
+				Err(e)
+			}
+		}
+	}
 
     /// 更新防火墙规则的RemoteIP（核心函数）
     ///
@@ -680,108 +791,129 @@ impl WindowsFirewall {
     /// - `Ok(false)`: 规则已存在且配置正确，无需更新
     /// - `Err(FirewallError)`: 操作失败
     #[allow(clippy::too_many_arguments)]
-    pub fn update_rule(
-        &self,
-        name: &str,
-        direction: Option<&str>,
-        old_ip_pattern: &str,
-        new_ip: &str,
-        action: Option<&str>,
-        protocol: Option<&str>,
-        local_port: Option<u16>,
-        remote_port: Option<u16>,
-        local_addr: Option<&str>,
-        description: Option<&str>,
-        enabled: Option<bool>,
-    ) -> Result<bool, FirewallError> {
-        let direction = direction.unwrap_or("in");
-        let action = action.unwrap_or("allow");
-        let protocol = protocol.unwrap_or("any");
+	pub fn update_rule(
+		&self,
+		name: &str,
+		direction: Option<&str>,
+		old_ip_pattern: &str,
+		new_ip: &str,
+		action: Option<&str>,
+		protocol: Option<&str>,
+		local_port: Option<u16>,
+		remote_port: Option<u16>,
+		local_addr: Option<&str>,
+		description: Option<&str>,
+		enabled: Option<bool>,
+	) -> Result<bool, FirewallError> {
+		let direction = direction.unwrap_or("in");
 
-        // 验证参数
-        if name.is_empty() {
-            return Err(FirewallError::InvalidParameter(
-                "规则名称不能为空".to_string(),
-            ));
-        }
-        if new_ip.is_empty() {
-            return Err(FirewallError::InvalidParameter(
-                "IP地址不能为空".to_string(),
-            ));
-        }
+		if name.is_empty() {
+			return Err(FirewallError::InvalidParameter("规则名称不能为空".to_string()));
+		}
+		if new_ip.is_empty() {
+			return Err(FirewallError::InvalidParameter("IP地址不能为空".to_string()));
+		}
+		log::debug!("try update_rule: {} {} NEWIP:{} OLD: {}", name, direction, new_ip, old_ip_pattern);
 
-        log::debug!(
-            "try update_rule: {} {} NEWIP:{} OLD: {}",
-            name,
-            direction,
-            new_ip,
-            old_ip_pattern
-        );
-        // 1. 检查规则是否存在
-        match self.get_rule_details(name, direction) {
-            Ok(_) => {
-                log::debug!("  found rule: '{}'", name);
-            }
-            Err(FirewallError::RuleNotFound(_)) => {
-                log::warn!(" rule '{}' not exists, create...", name);
-                return self
-                    .create_rule_with_params(
-                        name,
-                        direction,
-                        new_ip,
-                        action,
-                        protocol,
-                        local_port,
-                        remote_port,
-                        local_addr,
-                        description,
-                        enabled,
-                    )
-                    .map(|_| true);
-            }
-            Err(e) => return Err(e),
-        }
+		// ===== 需求1：获取旧规则完整参数（含 remoteip），并判断是否存在 =====
+		let old_rule = match self.get_rule_full_info(name, direction) {
+			Ok(r) => {
+				log::debug!("  found rule: '{}'", name);
+				r
+			}
+			Err(FirewallError::RuleNotFound(_)) => {
+				log::warn!(" rule '{}' not exists, create...", name);
+				return self
+					.create_rule_with_params(
+						name, direction, new_ip,
+						action.unwrap_or("allow"),
+						protocol.unwrap_or("any"),
+						local_port, remote_port, local_addr, description, enabled,
+					)
+					.map(|_| true);
+			}
+			Err(e) => return Err(e),
+		};
 
-        // 2. 获取当前RemoteIP配置
-        let current_ips = self.get_rule_remote_ips(name, direction)?;
-        log::debug!("  current RemoteIP: {:?}", current_ips);
+		// 当前 RemoteIP 列表（可能含 192.168.1.133/32 这种格式）
+		let current_ips = self.get_rule_remote_ips(name, direction)?;
+		log::debug!("  current RemoteIP: {:?}", current_ips);
 
-        // 3. 判断是否需要更新
-        let has_new_ip = self.is_ip_in_list(new_ip, &current_ips);
-        let has_old_ip = current_ips.iter().any(|ip| ip.starts_with(old_ip_pattern));
+		// ===== 需求2：用 CIDR/通配符/范围匹配过滤旧 IP，而不是简单相等/前缀 =====
+		let mut new_ips: Vec<String> = Vec::new();
+		for ip in &current_ips {
+			if self.ip_matches_pattern(ip, old_ip_pattern) {
+				log::debug!("  remove matched old ip: {}", ip);
+			} else {
+				// 保留的 IP 把 /32 还原成裸 IP，网段保持原样
+				new_ips.push(self.normalize_single_ip(ip));
+			}
+		}
 
-        if has_new_ip && !has_old_ip {
-            log::info!(" rule is same, not need update.");
-            return Ok(false);
-        }
+		let new_ip_clean = self.normalize_single_ip(new_ip);
+		let has_new_ip = new_ips.iter().any(|ip| ip == &new_ip_clean);
+		if !has_new_ip {
+			new_ips.push(new_ip_clean.clone());
+		}
 
-        // 4. 需要更新：删除旧规则并创建新规则
-        if has_new_ip && has_old_ip {
-            log::debug!(" not same ip, will delete and recreate");
-        } else {
-            log::debug!(" old ip not matched, update it");
-        }
+		// 无变化则无需更新
+		if new_ips.len() == current_ips.len() && has_new_ip {
+			log::debug!(" same rule ,do not update.");
+			return Ok(false);
+		}
 
-        // 删除旧规则
-        self.delete_rule(name)?;
+		let new_remote_ip = if new_ips.is_empty() {
+			"any".to_string()
+		} else {
+			new_ips.join(",")
+		};
+		log::debug!("  new RemoteIP: {}", new_remote_ip);
 
-        // 创建新规则
-        self.create_rule_with_params(
-            name,
-            direction,
-            new_ip,
-            action,
-            protocol,
-            local_port,
-            remote_port,
-            local_addr,
-            description,
-            enabled,
-        )?;
+		// ===== 需求3：None 参数沿用旧规则的值 =====
+		let eff_action = match action {
+			Some(a) if !a.is_empty() => a.to_string(),
+			_ => if old_rule.action.is_empty() { "allow".to_string() } else { old_rule.action.clone() },
+		};
+		let eff_protocol = match protocol {
+			Some(p) if !p.is_empty() => p.to_string(),
+			_ => if old_rule.protocol.is_empty() { "any".to_string() } else { old_rule.protocol.clone() },
+		};
+		let eff_local_port = local_port.or(old_rule.local_port);
+		let eff_remote_port = remote_port.or(old_rule.remote_port);
 
-        log::info!(" rule: {} updated OK，RemoteIP: {}", name, new_ip);
-        Ok(true)
-    }
+		// local_addr：None 时沿用旧 local_ip；若旧值是 any 则不传（netsh 默认即 any）
+		let eff_local_addr: Option<String> = match local_addr {
+			Some(a) => if self.is_any_value(a) { None } else { Some(a.to_string()) },
+			None => if self.is_any_value(&old_rule.local_ip) { None } else { Some(old_rule.local_ip.clone()) },
+		};
+		let eff_description: Option<String> = match description {
+			Some(d) => if d.is_empty() { None } else { Some(d.to_string()) },
+			None => if old_rule.description.is_empty() { None } else { Some(old_rule.description.clone()) },
+		};
+		let eff_enabled = enabled.or(Some(old_rule.enabled));
+
+		// 删除旧规则（带 dir，避免误删同名其它方向规则）
+		let name_arg = format!("name={}", name);
+		let dir_arg = format!("dir={}", direction);
+		self.run_netsh(&["advfirewall", "firewall", "delete", "rule", &name_arg, &dir_arg])?;
+
+		// 用新参数重建规则
+		self.create_rule_with_params(
+			name,
+			direction,
+			&new_remote_ip,
+			&eff_action,
+			&eff_protocol,
+			eff_local_port,
+			eff_remote_port,
+			eff_local_addr.as_deref(),
+			eff_description.as_deref(),
+			eff_enabled,
+		)?;
+
+		log::info!(" rule: {} updated OK，RemoteIP: {}", name, new_ip);
+		Ok(true)
+	}
 
     /// 批量更新多个IP（便捷函数）
     #[allow(clippy::too_many_arguments)]
