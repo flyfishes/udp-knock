@@ -75,7 +75,7 @@ pub trait FirewallManager: Send + Sync {
     fn delete_rule(&self, name: &str) -> Result<(), FirewallError>;
     fn get_status(&self) -> Result<FirewallStatus, FirewallError>;
     /// 默认实现返回不支持错误，各平台可选择性覆盖
-	#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn update_rule(
         &self,
         name: &str,
@@ -92,7 +92,7 @@ pub trait FirewallManager: Send + Sync {
     ) -> Result<bool, FirewallError> {
         // 默认返回不支持
         Err(FirewallError::NotImplemented(
-            "update_rule not supported on this platform".to_string()
+            "update_rule not supported on this platform".to_string(),
         ))
     }
 
@@ -106,7 +106,7 @@ pub trait FirewallManager: Send + Sync {
         strict_mode: bool,
     ) -> Result<bool, FirewallError> {
         Err(FirewallError::NotImplemented(
-            "verify_rule not supported on this platform".to_string()
+            "verify_rule not supported on this platform".to_string(),
         ))
     }
 }

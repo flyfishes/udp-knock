@@ -555,7 +555,7 @@ impl FirewallManager for WindowsFirewall {
 
 impl WindowsFirewall {
     /// 创建带完整参数的规则（内部辅助函数）
-	#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn create_rule_with_params(
         &self,
         name: &str,
@@ -648,7 +648,7 @@ impl WindowsFirewall {
     /// - `Ok(true)`: 规则已更新
     /// - `Ok(false)`: 规则已存在且配置正确，无需更新
     /// - `Err(FirewallError)`: 操作失败
-	#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_rule(
         &self,
         name: &str,
@@ -753,7 +753,7 @@ impl WindowsFirewall {
     }
 
     /// 批量更新多个IP（便捷函数）
-	#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn update_rule_with_multiple_ips(
         &self,
         name: &str,
