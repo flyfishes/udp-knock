@@ -168,7 +168,7 @@ udp-knock client -a status
 
 #### ⑤ 更新防火墙windows (`update`)
 ```bash
-udp-knock client -a udpate -p "MyRule" in|Out old_ip new_ip [action=allow] [protocol=tcp]
+udp-knock client -a update -p "MyRule" old_ip new_ip [action=allow] [protocol=tcp] [in|Out] 
 ```
 ---
 

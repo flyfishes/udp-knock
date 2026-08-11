@@ -549,6 +549,37 @@ impl FirewallManager for WindowsFirewall {
             active_rules: active_count,
         })
     }
+
+    // ========== 关键：覆盖 trait 中的 update_rule ==========
+    fn update_rule(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+        old_ip_pattern: &str,
+        new_ip: &str,
+        action: Option<&str>,
+        protocol: Option<&str>,
+        local_port: Option<u16>,
+        remote_port: Option<u16>,
+        local_addr: Option<&str>,
+        description: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<bool, FirewallError> {
+        // 调用固有方法
+        self.update_rule(
+            name,
+            direction,
+            old_ip_pattern,
+            new_ip,
+            action,
+            protocol,
+            local_port,
+            remote_port,
+            local_addr,
+            description,
+            enabled,
+        )
+    }
 }
 
 // ========== 新增的 update_rule 相关功能 ==========
