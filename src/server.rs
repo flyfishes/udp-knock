@@ -77,7 +77,7 @@ impl Server {
     pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let socket = UdpSocket::bind(&self.config.bind_addr)?;
         log::info!("Server running on UDP {}", self.config.bind_addr);
-		log::info!("Platform: {}",self.platform.to_lowercase().as_str());
+        log::info!("Platform: {}", self.platform.to_lowercase().as_str());
 
         let crypto = CryptoManager::new(&self.config.shared_key);
         let firewall: Box<dyn FirewallManager> = get_firewall_manager(&self.platform);
