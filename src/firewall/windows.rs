@@ -32,7 +32,8 @@ impl WindowsFirewall {
                     .to_string()
             };
 
-            if detail.contains("No rules match") || detail.contains("没有与指定标准匹配的规则") {
+            if detail.contains("No rules match") || detail.contains("没有与指定标准匹配的规则")
+            {
                 let rule_name = args
                     .iter()
                     .find(|a| a.starts_with("name="))
@@ -51,9 +52,16 @@ impl WindowsFirewall {
     }
 
     /// 获取规则当前的RemoteIP配置
-    fn get_rule_remote_ips(&self, name: &str, direction: &str) -> Result<Vec<String>, FirewallError> {
+    fn get_rule_remote_ips(
+        &self,
+        name: &str,
+        direction: &str,
+    ) -> Result<Vec<String>, FirewallError> {
         let output = self.run_netsh(&[
-            "advfirewall", "firewall", "show", "rule",
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
             &format!("name={}", name),
             &format!("dir={}", direction),
         ])?;
@@ -74,7 +82,10 @@ impl WindowsFirewall {
             };
 
             let key_lower = key.to_lowercase();
-            if key_lower.contains("remoteip") || key_lower.contains("远程 ip") || key_lower.contains("远程ip") {
+            if key_lower.contains("remoteip")
+                || key_lower.contains("远程 ip")
+                || key_lower.contains("远程ip")
+            {
                 // 可能包含多个IP，用逗号分隔
                 for ip in val.split(',') {
                     let clean_ip = ip.trim();
@@ -92,7 +103,10 @@ impl WindowsFirewall {
     /// 获取规则详情
     fn get_rule_details(&self, name: &str, direction: &str) -> Result<FirewallRule, FirewallError> {
         let output = self.run_netsh(&[
-            "advfirewall", "firewall", "show", "rule",
+            "advfirewall",
+            "firewall",
+            "show",
+            "rule",
             &format!("name={}", name),
             &format!("dir={}", direction),
         ])?;
@@ -129,9 +143,15 @@ impl WindowsFirewall {
                 rule.proto = val.to_string();
             } else if key_lower.contains("localport") || key_lower.contains("本地端口") {
                 rule.port = val.parse().unwrap_or(0);
-            } else if key_lower.contains("remoteip") || key_lower.contains("远程 ip") || key_lower.contains("远程ip") {
+            } else if key_lower.contains("remoteip")
+                || key_lower.contains("远程 ip")
+                || key_lower.contains("远程ip")
+            {
                 rule.src = val.to_string();
-            } else if key_lower.contains("localip") || key_lower.contains("本地 ip") || key_lower.contains("本地ip") {
+            } else if key_lower.contains("localip")
+                || key_lower.contains("本地 ip")
+                || key_lower.contains("本地ip")
+            {
                 rule.dest = val.to_string();
             }
         }
@@ -348,7 +368,9 @@ impl WindowsFirewall {
 
         // 处理多IP格式 (如 192.168.0.1,192.168.0.2)
         if expected.contains(',') {
-            return expected.split(',').any(|ip| self.ip_match(ip.trim(), current));
+            return expected
+                .split(',')
+                .any(|ip| self.ip_match(ip.trim(), current));
         }
 
         false
@@ -362,7 +384,9 @@ impl WindowsFirewall {
         }
 
         // 检查当前IP列表中是否有匹配的
-        current_ips.iter().any(|current| self.ip_match(expected, current))
+        current_ips
+            .iter()
+            .any(|current| self.ip_match(expected, current))
     }
 
     /// 检查IP是否在IP列表中（支持多种格式）
@@ -531,6 +555,7 @@ impl FirewallManager for WindowsFirewall {
 
 impl WindowsFirewall {
     /// 创建带完整参数的规则（内部辅助函数）
+	#[allow(clippy::too_many_arguments)]
     fn create_rule_with_params(
         &self,
         name: &str,
@@ -623,6 +648,7 @@ impl WindowsFirewall {
     /// - `Ok(true)`: 规则已更新
     /// - `Ok(false)`: 规则已存在且配置正确，无需更新
     /// - `Err(FirewallError)`: 操作失败
+	#[allow(clippy::too_many_arguments)]
     pub fn update_rule(
         &self,
         name: &str,
@@ -643,13 +669,23 @@ impl WindowsFirewall {
 
         // 验证参数
         if name.is_empty() {
-            return Err(FirewallError::InvalidParameter("规则名称不能为空".to_string()));
+            return Err(FirewallError::InvalidParameter(
+                "规则名称不能为空".to_string(),
+            ));
         }
         if new_ip.is_empty() {
-            return Err(FirewallError::InvalidParameter("IP地址不能为空".to_string()));
+            return Err(FirewallError::InvalidParameter(
+                "IP地址不能为空".to_string(),
+            ));
         }
 
-		log::debug!("try update_rule: {} {} NEWIP:{} OLD: {}", name, direction, new_ip, old_ip_pattern);        
+        log::debug!(
+            "try update_rule: {} {} NEWIP:{} OLD: {}",
+            name,
+            direction,
+            new_ip,
+            old_ip_pattern
+        );
         // 1. 检查规则是否存在
         match self.get_rule_details(name, direction) {
             Ok(_) => {
@@ -717,6 +753,7 @@ impl WindowsFirewall {
     }
 
     /// 批量更新多个IP（便捷函数）
+	#[allow(clippy::too_many_arguments)]
     pub fn update_rule_with_multiple_ips(
         &self,
         name: &str,
@@ -732,7 +769,9 @@ impl WindowsFirewall {
         enabled: Option<bool>,
     ) -> Result<bool, FirewallError> {
         if new_ips.is_empty() {
-            return Err(FirewallError::InvalidParameter("IP列表不能为空".to_string()));
+            return Err(FirewallError::InvalidParameter(
+                "IP列表不能为空".to_string(),
+            ));
         }
 
         let direction = direction.unwrap_or("in");
@@ -815,9 +854,9 @@ impl WindowsFirewall {
                 }
 
                 // 检查所有期望IP是否都在当前规则中
-                let all_expected_match = expected_ips.iter().all(|expected| {
-                    self.is_ip_matched(expected, &current_ips)
-                });
+                let all_expected_match = expected_ips
+                    .iter()
+                    .all(|expected| self.is_ip_matched(expected, &current_ips));
 
                 if !all_expected_match {
                     return Ok(false);
@@ -826,9 +865,9 @@ impl WindowsFirewall {
                 // 严格模式：检查规则中的IP是否都在期望列表中
                 if strict_mode {
                     let all_current_match = current_ips.iter().all(|current| {
-                        expected_ips.iter().any(|expected| {
-                            self.ip_match(expected, current)
-                        })
+                        expected_ips
+                            .iter()
+                            .any(|expected| self.ip_match(expected, current))
                     });
                     return Ok(all_current_match && rule.enabled);
                 }
@@ -861,7 +900,11 @@ impl WindowsFirewall {
     }
 
     /// 获取规则详情（公开方法）
-    pub fn get_rule_info(&self, name: &str, direction: Option<&str>) -> Result<FirewallRule, FirewallError> {
+    pub fn get_rule_info(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+    ) -> Result<FirewallRule, FirewallError> {
         let direction = direction.unwrap_or("in");
         self.get_rule_details(name, direction)
     }
@@ -877,7 +920,11 @@ impl WindowsFirewall {
     }
 
     /// 获取规则的RemoteIP列表（公开方法）
-    pub fn get_remote_ips(&self, name: &str, direction: Option<&str>) -> Result<Vec<String>, FirewallError> {
+    pub fn get_remote_ips(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+    ) -> Result<Vec<String>, FirewallError> {
         let direction = direction.unwrap_or("in");
         self.get_rule_remote_ips(name, direction)
     }
@@ -896,9 +943,9 @@ impl WindowsFirewall {
         let all_expected_match = expected.iter().all(|exp| self.is_ip_matched(exp, actual));
 
         // 检查所有实际IP是否都在期望列表中
-        let all_actual_match = actual.iter().all(|act| {
-            expected.iter().any(|exp| self.ip_match(exp, act))
-        });
+        let all_actual_match = actual
+            .iter()
+            .all(|act| expected.iter().any(|exp| self.ip_match(exp, act)));
 
         all_expected_match && all_actual_match
     }
@@ -945,23 +992,23 @@ mod tests {
     #[test]
     fn test_ip_match() {
         let firewall = WindowsFirewall::new();
-        
+
         // 完全匹配
         assert!(firewall.ip_match("192.168.1.1", "192.168.1.1"));
         assert!(!firewall.ip_match("192.168.1.1", "192.168.1.2"));
-        
+
         // CIDR匹配
         assert!(firewall.ip_match("192.168.0.0/24", "192.168.0.100"));
         assert!(!firewall.ip_match("192.168.0.0/24", "192.168.1.100"));
-        
+
         // IP范围匹配
         assert!(firewall.ip_match("192.168.0.1-192.168.0.10", "192.168.0.5"));
         assert!(!firewall.ip_match("192.168.0.1-192.168.0.10", "192.168.0.20"));
-        
+
         // 通配符匹配
         assert!(firewall.ip_match("192.168.*.*", "192.168.1.1"));
         assert!(!firewall.ip_match("192.168.*.*", "192.169.1.1"));
-        
+
         // 多IP匹配
         assert!(firewall.ip_match("192.168.0.1,192.168.0.2", "192.168.0.1"));
         assert!(firewall.ip_match("192.168.0.1,192.168.0.2", "192.168.0.2"));

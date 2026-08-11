@@ -1,4 +1,4 @@
-#![allow(dead_code)] 
+#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +74,8 @@ pub trait FirewallManager: Send + Sync {
     ) -> Result<(), FirewallError>;
     fn delete_rule(&self, name: &str) -> Result<(), FirewallError>;
     fn get_status(&self) -> Result<FirewallStatus, FirewallError>;
-	/// 默认实现返回不支持错误，各平台可选择性覆盖
+    /// 默认实现返回不支持错误，各平台可选择性覆盖
+	#[allow(clippy::too_many_arguments)]
     fn update_rule(
         &self,
         name: &str,
@@ -91,7 +92,7 @@ pub trait FirewallManager: Send + Sync {
     ) -> Result<bool, FirewallError> {
         // 默认返回不支持
         Err(FirewallError::NotImplemented(
-            format!("update_rule not supported on this platform")
+            "update_rule not supported on this platform".to_string()
         ))
     }
 
@@ -105,7 +106,7 @@ pub trait FirewallManager: Send + Sync {
         strict_mode: bool,
     ) -> Result<bool, FirewallError> {
         Err(FirewallError::NotImplemented(
-            format!("verify_rule not supported on this platform")
+            "verify_rule not supported on this platform".to_string()
         ))
     }
 }

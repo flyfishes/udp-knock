@@ -402,62 +402,66 @@ impl Server {
                     data: None,
                     timestamp: ts,
                 },
-            }
-			"update" => {
-                if cmd.params.len() >= 5 {  // 最少需要5个必需参数
-					let name = &cmd.params[0];
-					let old_ip_pattern = &cmd.params[1];
-					let new_ip = &cmd.params[2];
-					let action = &cmd.params[3];
-					let protocol = &cmd.params[4];
-					
-					// 可选参数：第5个是 direction，第6个是 local_port，第7个是 enabled
-					let direction = cmd.params.get(5).map(|s| s.as_str());
-					let local_port = cmd.params.get(6).and_then(|s| s.parse().ok());
-					let enabled = cmd.params.get(7).map(|s| s.to_lowercase() == "true" || s == "1");
-					
-					match firewall.update_rule(
-						name,                                    // &String -> &str (自动解引用)
-						direction,                               // Option<&str>
-						old_ip_pattern,                          // &String -> &str
-						new_ip,                                  // &String -> &str
-						Some(action.as_str()),                   // &String -> Option<&str>
-						Some(protocol.as_str()),                 // &String -> Option<&str>
-						local_port,                              // Option<u16>
-						None,                                    // remote_port
-						None,                                    // local_addr
-						None,                                    // description
-						enabled,                 				 // Option<bool> 
-					) {
-						Ok(true) => ResponsePayload {
-							success: true,
-							message: format!("Rule '{}' updated successfully", name),
-							data: None,
-							timestamp: ts,
-						},
-						Ok(false) => ResponsePayload {
-							success: true,
-							message: format!("Rule '{}' already configured correctly", name),
-							data: None,
-							timestamp: ts,
-						},
-						Err(e) => ResponsePayload {
-							success: false,
-							message: format!("Failed to update rule: {}", e),
-							data: None,
-							timestamp: ts,
-						},
-					}
-				} else {
-					ResponsePayload {
+            },
+            "update" => {
+                if cmd.params.len() >= 5 {
+                    // 最少需要5个必需参数
+                    let name = &cmd.params[0];
+                    let old_ip_pattern = &cmd.params[1];
+                    let new_ip = &cmd.params[2];
+                    let action = &cmd.params[3];
+                    let protocol = &cmd.params[4];
+
+                    // 可选参数：第5个是 direction，第6个是 local_port，第7个是 enabled
+                    let direction = cmd.params.get(5).map(|s| s.as_str());
+                    let local_port = cmd.params.get(6).and_then(|s| s.parse().ok());
+                    let enabled = cmd
+                        .params
+                        .get(7)
+                        .map(|s| s.to_lowercase() == "true" || s == "1");
+
+                    match firewall.update_rule(
+                        name,                    // &String -> &str (自动解引用)
+                        direction,               // Option<&str>
+                        old_ip_pattern,          // &String -> &str
+                        new_ip,                  // &String -> &str
+                        Some(action.as_str()),   // &String -> Option<&str>
+                        Some(protocol.as_str()), // &String -> Option<&str>
+                        local_port,              // Option<u16>
+                        None,                    // remote_port
+                        None,                    // local_addr
+                        None,                    // description
+                        enabled,                 // Option<bool>
+                    ) {
+                        Ok(true) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' updated successfully", name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Ok(false) => ResponsePayload {
+                            success: true,
+                            message: format!("Rule '{}' already configured correctly", name),
+                            data: None,
+                            timestamp: ts,
+                        },
+                        Err(e) => ResponsePayload {
+                            success: false,
+                            message: format!("Failed to update rule: {}", e),
+                            data: None,
+                            timestamp: ts,
+                        },
+                    }
+                } else {
+                    ResponsePayload {
 						success: false,
 						message: "Usage: update <name> <old_ip_pattern> <new_ip> <action> <protocol> [direction] [local_port] [enabled]"
 							.to_string(),
 						data: None,
 						timestamp: ts,
 					}
-				}
-            },
+                }
+            }
             unknown => ResponsePayload {
                 success: false,
                 message: format!("Unknown action: {}", unknown),

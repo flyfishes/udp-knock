@@ -183,5 +183,5 @@ impl FirewallManager for OpenWrtFirewall {
             total_rules,
             active_rules,
         })
-    }	
+    }
 }
