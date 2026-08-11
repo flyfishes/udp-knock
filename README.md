@@ -166,6 +166,10 @@ udp-knock client -a delete -p rule_web
 udp-knock client -a status
 ```
 
+#### ⑤ 更新防火墙windows (`update`)
+```bash
+udp-knock client -a udpate -p "MyRule" in|Out old_ip new_ip [action=allow] [protocol=tcp]
+```
 ---
 
 ### 4. 本地防火墙状态查看 (`status`)

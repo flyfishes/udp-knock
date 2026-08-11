@@ -1,3 +1,4 @@
+#![allow(dead_code)] 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,24 @@ impl std::fmt::Display for FirewallError {
 
 impl std::error::Error for FirewallError {}
 
+/// 防火墙更新配置
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct FirewallUpdateConfig {
+    pub name: String,
+    pub direction: Option<String>,
+    pub old_ip_pattern: String,
+    pub new_ip: String,
+    pub action: Option<String>,
+    pub protocol: Option<String>,
+    pub local_port: Option<u16>,
+    pub remote_port: Option<u16>,
+    pub local_addr: Option<String>,
+    pub description: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+#[allow(unused_variables)]
 pub trait FirewallManager: Send + Sync {
     fn list_rules(&self) -> Result<Vec<FirewallRule>, FirewallError>;
     fn enable_rule(&self, name: &str, dir: Option<&str>) -> Result<(), FirewallError>;
@@ -55,6 +74,40 @@ pub trait FirewallManager: Send + Sync {
     ) -> Result<(), FirewallError>;
     fn delete_rule(&self, name: &str) -> Result<(), FirewallError>;
     fn get_status(&self) -> Result<FirewallStatus, FirewallError>;
+	/// 默认实现返回不支持错误，各平台可选择性覆盖
+    fn update_rule(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+        old_ip_pattern: &str,
+        new_ip: &str,
+        action: Option<&str>,
+        protocol: Option<&str>,
+        local_port: Option<u16>,
+        remote_port: Option<u16>,
+        local_addr: Option<&str>,
+        description: Option<&str>,
+        enabled: Option<bool>,
+    ) -> Result<bool, FirewallError> {
+        // 默认返回不支持
+        Err(FirewallError::NotImplemented(
+            format!("update_rule not supported on this platform")
+        ))
+    }
+
+    /// 验证规则配置
+    /// 默认实现返回不支持错误，各平台可选择性覆盖
+    fn verify_rule(
+        &self,
+        name: &str,
+        direction: Option<&str>,
+        expected_ips: &[String],
+        strict_mode: bool,
+    ) -> Result<bool, FirewallError> {
+        Err(FirewallError::NotImplemented(
+            format!("verify_rule not supported on this platform")
+        ))
+    }
 }
 
 pub mod linux;
