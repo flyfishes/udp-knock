@@ -1,4 +1,5 @@
 use super::{FirewallError, FirewallManager, FirewallRule, FirewallStatus};
+use encoding_rs::GBK;
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -33,8 +34,25 @@ impl WindowsFirewall {
             .output()
             .map_err(|e| FirewallError::CommandFailed(format!("Failed to execute netsh: {}", e)))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        // let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        // let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout = match String::from_utf8(output.stdout) {
+            Ok(s) => s, // 英文系统或已配置 UTF-8 的系统，直接成功
+            Err(e) => {
+                // 中文 Windows 系统，从错误中提取原始字节，使用 GBK 解码
+                let (s, _, _) = GBK.decode(e.as_bytes());
+                s.into_owned()
+            }
+        };
+
+        // 3. 智能解码 stderr (同理)
+        let stderr = match String::from_utf8(output.stderr) {
+            Ok(s) => s,
+            Err(e) => {
+                let (s, _, _) = GBK.decode(e.as_bytes());
+                s.into_owned()
+            }
+        };
 
         if !output.status.success() {
             let detail = if !stdout.trim().is_empty() {
@@ -96,12 +114,12 @@ impl WindowsFirewall {
             };
 
             let key_lower = key.to_lowercase();
-            log::debug!("rule key:{}", key_lower);
             if key_lower.contains("remoteip")
                 || key_lower.contains("远程 ip")
                 || key_lower.contains("远程ip")
             {
                 // 可能包含多个IP，用逗号分隔
+                log::debug!("{}: {}", key_lower, val);
                 for ip in val.split(',') {
                     let clean_ip = ip.trim();
                     if !clean_ip.is_empty() && clean_ip != "*" && clean_ip != "any" {
@@ -237,9 +255,34 @@ impl WindowsFirewall {
                     val_lower
                 };
             } else if key_lower.contains("localport") || key_lower.contains("本地端口") {
-                info.local_port = val.parse::<u16>().ok();
+                // info.local_port = val.parse::<u16>().ok();
+                // 优化：尝试解析纯数字，如果失败（如 "Any", "80,443"），尝试提取第一个数字，否则记为 0
+                info.local_port = val.parse::<u16>().ok().or_else(|| {
+                    // 尝试提取字符串中的第一个连续数字 (例如 "80,443" -> 80)
+                    let mut num_str = String::new();
+                    for c in val.chars() {
+                        if c.is_ascii_digit() {
+                            num_str.push(c);
+                        } else if !num_str.is_empty() {
+                            break;
+                        }
+                    }
+                    num_str.parse::<u16>().ok()
+                });
             } else if key_lower.contains("remoteport") || key_lower.contains("远程端口") {
-                info.remote_port = val.parse::<u16>().ok();
+                // info.remote_port = val.parse::<u16>().ok();
+                // 优化：尝试解析纯数字，如果失败（如 "Any", "80,443"），尝试提取第一个数字，否则记为 0
+                info.remote_port = val.parse::<u16>().ok().or_else(|| {
+                    let mut num_str = String::new();
+                    for c in val.chars() {
+                        if c.is_ascii_digit() {
+                            num_str.push(c);
+                        } else if !num_str.is_empty() {
+                            break;
+                        }
+                    }
+                    num_str.parse::<u16>().ok()
+                });
             } else if key_lower.contains("remoteip")
                 || key_lower.contains("远程 ip")
                 || key_lower.contains("远程ip")
@@ -317,6 +360,7 @@ impl WindowsFirewall {
                 continue;
             }
 
+            // 兼容中英文冒号
             let (key, val) = if let Some((k, v)) = line.split_once(':') {
                 (k.trim(), v.trim())
             } else if let Some((k, v)) = line.split_once('：') {
@@ -325,9 +369,12 @@ impl WindowsFirewall {
                 continue;
             };
 
+            // 核心优化：转小写并去除所有空格，彻底解决 "远程 IP" / "Remote IP" 等空格变体问题
             let key_lower = key.to_lowercase();
+            let key_norm = key_lower.replace(' ', "");
 
-            if key_lower.contains("rule name") || key_lower.contains("规则名") {
+            // 判断是否是新规则的开始
+            if key_norm.contains("rulename") || key_norm.contains("规则名") {
                 if in_rule && !current_name.is_empty() {
                     rules.push(FirewallRule {
                         name: current_name.clone(),
@@ -345,28 +392,37 @@ impl WindowsFirewall {
                 current_dest = "any".to_string();
                 current_proto = "any".to_string();
                 current_port = 0;
+                log::debug!("rule name: {}:{}", key_lower, val);
             } else if in_rule {
-                if key_lower == "enabled" || key_lower.contains("已启用") {
+                if key_norm == "enabled" || key_norm.contains("已启用") {
                     let v = val.to_lowercase();
                     current_enabled = v == "yes" || v == "是" || v == "true" || v == "1";
-                } else if key_lower.contains("protocol") || key_lower.contains("协议") {
+                } else if key_norm.contains("protocol") || key_norm.contains("协议") {
                     current_proto = val.to_string();
-                } else if key_lower.contains("localport") || key_lower.contains("本地端口") {
-                    current_port = val.parse().unwrap_or(0);
-                } else if key_lower.contains("remoteip")
-                    || key_lower.contains("远程 ip")
-                    || key_lower.contains("远程ip")
-                {
+                } else if key_norm.contains("localport") || key_norm.contains("本地端口") {
+                    // 优化：尝试解析纯数字，如果失败（如 "Any", "80,443"），尝试提取第一个数字，否则记为 0
+                    current_port = val.parse::<u16>().unwrap_or_else(|_| {
+                        // 尝试提取字符串中的第一个连续数字 (例如 "80,443" -> 80)
+                        let mut num_str = String::new();
+                        for c in val.chars() {
+                            if c.is_ascii_digit() {
+                                num_str.push(c);
+                            } else if !num_str.is_empty() {
+                                break;
+                            }
+                        }
+                        num_str.parse::<u16>().unwrap_or(0)
+                    });
+                } else if key_norm.contains("remoteip") || key_norm.contains("远程ip") {
                     current_src = val.to_string();
-                } else if key_lower.contains("localip")
-                    || key_lower.contains("本地 ip")
-                    || key_lower.contains("本地ip")
-                {
+                } else if key_norm.contains("localip") || key_norm.contains("本地ip") {
                     current_dest = val.to_string();
                 }
+                // 注意：这里依然没有解析 Action 和 Direction，因为 FirewallRule 结构体没有这两个字段
             }
         }
 
+        // 压入最后一个规则
         if in_rule && !current_name.is_empty() {
             rules.push(FirewallRule {
                 name: current_name,
